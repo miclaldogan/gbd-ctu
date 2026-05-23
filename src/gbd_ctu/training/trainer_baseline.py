@@ -62,10 +62,22 @@ def train_baselines(
     xgb_subsample: float = 0.8,
     xgb_colsample_bytree: float = 0.8,
     xgb_tree_method: str = "hist",
+    scenario_ids: list[int] | None = None,
 ) -> pd.DataFrame:
-    """Train Random Forest and XGBoost baselines on serialized CTU-13 graphs."""
+    """Train Random Forest and XGBoost baselines on serialized CTU-13 graphs.
+
+    Parameters
+    ----------
+    scenario_ids:
+        Optional list of scenario IDs to restrict training/evaluation.
+        When ``None`` all graphs in ``graph_dir`` are used.
+    """
 
     graphs = load_graphs(graph_dir)
+    if scenario_ids is not None:
+        graphs = [g for g in graphs if getattr(g, "scenario_id", None) in scenario_ids]
+        if not graphs:
+            raise ValueError(f"No graphs found for scenario_ids={scenario_ids} in {graph_dir}.")
     x_train, y_train = _stack_split(graphs, split="train")
     if x_train.size == 0:
         raise ValueError("No training samples were found in the graph artifacts.")
