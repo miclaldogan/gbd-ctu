@@ -11,8 +11,10 @@ import pytest
 torch = pytest.importorskip("torch")
 pyg_data = pytest.importorskip("torch_geometric.data")
 
+from gbd_ctu.models.gnn.gat import GATNodeClassifier
 from gbd_ctu.models.gnn.graphsage import GraphSAGENodeClassifier
 from gbd_ctu.models.gnn.hybrid import GraphSageGATHybridClassifier
+from gbd_ctu.models.gnn import build_gnn_from_config
 
 
 # ---------------------------------------------------------------------------
@@ -141,17 +143,173 @@ def test_graphsage_channel_halving() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Hybrid (pre-existing)
+# Hybrid (updated parallel architecture)
 # ---------------------------------------------------------------------------
 
-def test_hybrid_forward_returns_node_logits() -> None:
-    """The hybrid model should emit one logit vector per node."""
-
-    data = pyg_data.Data(
-        x=torch.randn(4, 14),
-        edge_index=torch.tensor([[0, 1, 2, 3], [1, 2, 3, 0]], dtype=torch.long),
-    )
-    model = GraphSageGATHybridClassifier(in_channels=14, hidden_channels=16, out_channels=2, heads=2)
+def test_hybrid_forward_output_shape() -> None:
+    """Parallel SAGE+GAT hybrid must emit [N, 2] logits."""
+    data = _small_graph(num_nodes=5, in_channels=6)
+    model = GraphSageGATHybridClassifier(in_channels=6, embed_channels=32, out_channels=2)
     logits = model(data)
-    assert logits.shape == (4, 2)
+    assert logits.shape == (5, 2)
+
+
+def test_hybrid_backward_compat_hidden_channels_kwarg() -> None:
+    """Callers using the legacy hidden_channels kwarg must still work."""
+    data = _small_graph(num_nodes=5, in_channels=6)
+    model = GraphSageGATHybridClassifier(in_channels=6, hidden_channels=16, out_channels=2)
+    logits = model(data)
+    assert logits.shape == (5, 2)
+
+
+def test_hybrid_output_is_finite() -> None:
+    """Hybrid forward pass must not produce NaN or Inf."""
+    import numpy as np
+    data = _small_graph(num_nodes=8, in_channels=6)
+    model = GraphSageGATHybridClassifier(in_channels=6, embed_channels=16, out_channels=2)
+    model.eval()
+    with torch.no_grad():
+        logits = model(data)
+    assert torch.isfinite(logits).all()
+
+
+def test_hybrid_both_branches_have_parameters() -> None:
+    """sage_branch and gat_branch must each have trainable parameters."""
+    model = GraphSageGATHybridClassifier(in_channels=6, embed_channels=32, out_channels=2)
+    sage_params = sum(p.numel() for p in model.sage_branch.parameters())
+    gat_params = sum(p.numel() for p in model.gat_branch.parameters())
+    assert sage_params > 0
+    assert gat_params > 0
+
+
+def test_hybrid_classifier_input_is_concatenated() -> None:
+    """The final Linear layer input must be 2*embed_channels."""
+    embed = 32
+    model = GraphSageGATHybridClassifier(in_channels=6, embed_channels=embed, out_channels=2)
+    assert model.classifier.in_features == 2 * embed
+
+
+def test_hybrid_param_count_stored_on_init() -> None:
+    model = GraphSageGATHybridClassifier(in_channels=6, embed_channels=32, out_channels=2)
+    assert hasattr(model, "num_parameters")
+    assert model.num_parameters == sum(p.numel() for p in model.parameters())
+
+
+def test_hybrid_dropout_disabled_in_eval() -> None:
+    """Eval mode must produce deterministic outputs."""
+    data = _small_graph(num_nodes=5, in_channels=6)
+    model = GraphSageGATHybridClassifier(in_channels=6, embed_channels=32, dropout=0.9)
+    model.eval()
+    with torch.no_grad():
+        assert torch.allclose(model(data), model(data))
+
+
+# ---------------------------------------------------------------------------
+# GAT
+# ---------------------------------------------------------------------------
+
+def test_gat_forward_output_shape() -> None:
+    """GAT forward pass must return [N, 2] logits."""
+    data = _small_graph(num_nodes=5, in_channels=6)
+    model = GATNodeClassifier(in_channels=6, hidden_channels=64, embed_channels=32, out_channels=2, heads=4)
+    logits = model(data)
+    assert logits.shape == (5, 2)
+
+
+def test_gat_output_shape_with_6_node_features() -> None:
+    """GAT must handle 6-dim node features (CTU-13 schema)."""
+    data = _small_graph(num_nodes=10, in_channels=6)
+    model = GATNodeClassifier(in_channels=6)
+    logits = model(data)
+    assert logits.shape == (10, 2)
+
+
+def test_gat_output_is_finite() -> None:
+    """GAT forward pass must not produce NaN or Inf."""
+    data = _small_graph(num_nodes=8, in_channels=6)
+    model = GATNodeClassifier(in_channels=6, hidden_channels=64, embed_channels=32)
+    model.eval()
+    with torch.no_grad():
+        logits = model(data)
+    assert torch.isfinite(logits).all()
+
+
+def test_gat_first_layer_concat_true() -> None:
+    """gat1 must use concat=True so its output width = hidden_channels * heads."""
+    model = GATNodeClassifier(in_channels=6, hidden_channels=64, heads=4)
+    assert model.gat1.concat is True
+
+
+def test_gat_second_layer_single_head_no_concat() -> None:
+    """gat2 must use heads=1 and concat=False."""
+    model = GATNodeClassifier(in_channels=6, hidden_channels=64, embed_channels=32, heads=4)
+    assert model.gat2.heads == 1
+    assert model.gat2.concat is False
+
+
+def test_gat_classifier_input_matches_embed_channels() -> None:
+    """The Linear classifier input must equal embed_channels."""
+    embed = 32
+    model = GATNodeClassifier(in_channels=6, hidden_channels=64, embed_channels=embed, heads=4)
+    assert model.classifier.in_features == embed
+
+
+def test_gat_param_count_stored_on_init() -> None:
+    model = GATNodeClassifier(in_channels=6)
+    assert hasattr(model, "num_parameters")
+    assert model.num_parameters == sum(p.numel() for p in model.parameters())
+
+
+def test_gat_dropout_disabled_in_eval() -> None:
+    data = _small_graph(num_nodes=5, in_channels=6)
+    model = GATNodeClassifier(in_channels=6, dropout=0.9)
+    model.eval()
+    with torch.no_grad():
+        assert torch.allclose(model(data), model(data))
+
+
+def test_gat_configurable_heads() -> None:
+    """More heads → more parameters in gat1."""
+    m2 = GATNodeClassifier(in_channels=6, hidden_channels=32, heads=2)
+    m8 = GATNodeClassifier(in_channels=6, hidden_channels=32, heads=8)
+    assert m8.num_parameters > m2.num_parameters
+
+
+# ---------------------------------------------------------------------------
+# Factory: build_gnn_from_config
+# ---------------------------------------------------------------------------
+
+def test_factory_builds_graphsage() -> None:
+    config = {"model_type": "graphsage", "graphsage": {"hidden_dim": 64, "num_layers": 2, "dropout": 0.3}}
+    model = build_gnn_from_config(in_channels=6, config=config)
+    assert isinstance(model, GraphSAGENodeClassifier)
+    data = _small_graph(num_nodes=5, in_channels=6)
+    assert model(data).shape == (5, 2)
+
+
+def test_factory_builds_gat() -> None:
+    config = {"model_type": "gat", "gat": {"hidden_channels": 32, "embed_channels": 16, "heads": 2}}
+    model = build_gnn_from_config(in_channels=6, config=config)
+    assert isinstance(model, GATNodeClassifier)
+    data = _small_graph(num_nodes=5, in_channels=6)
+    assert model(data).shape == (5, 2)
+
+
+def test_factory_builds_hybrid() -> None:
+    config = {"model_type": "hybrid", "hybrid": {"embed_channels": 16, "dropout": 0.2}}
+    model = build_gnn_from_config(in_channels=6, config=config)
+    assert isinstance(model, GraphSageGATHybridClassifier)
+    data = _small_graph(num_nodes=5, in_channels=6)
+    assert model(data).shape == (5, 2)
+
+
+def test_factory_defaults_to_hybrid_when_no_model_type() -> None:
+    config = {}
+    model = build_gnn_from_config(in_channels=6, config=config)
+    assert isinstance(model, GraphSageGATHybridClassifier)
+
+
+def test_factory_raises_on_unknown_model_type() -> None:
+    with pytest.raises(ValueError, match="Unknown model_type"):
+        build_gnn_from_config(in_channels=6, config={"model_type": "transformer"})
 
