@@ -79,6 +79,32 @@ def save_processed_graphs(graphs: list, output_dir: str | Path) -> list[Path]:
     return saved_paths
 
 
+def _print_dry_run_summary(loader: CTU13Loader, scenario_ids: list[int] | None) -> None:
+    """Load scenarios and print shape and label distribution without side effects."""
+
+    available = loader.available_scenarios()
+    targets = scenario_ids if scenario_ids is not None else available
+    missing = [sid for sid in targets if sid not in available]
+    if missing:
+        print(f"[dry-run] WARNING: scenarios not found on disk: {missing}")
+        targets = [sid for sid in targets if sid in available]
+
+    if not targets:
+        print("[dry-run] No scenarios to display.")
+        return
+
+    header = f"{'Scenario':>10}  {'Flows':>8}  {'Botnet':>8}  {'Benign':>8}  {'Botnet%':>8}"
+    print(header)
+    print("-" * len(header))
+    for sid in sorted(targets):
+        frame = loader.load_scenario(sid)
+        total = len(frame)
+        botnet = int(frame["label_binary"].sum())
+        benign = total - botnet
+        pct = 100.0 * botnet / total if total else 0.0
+        print(f"{sid:>10}  {total:>8}  {botnet:>8}  {benign:>8}  {pct:>7.2f}%")
+
+
 def main() -> int:
     """Parse CLI arguments and run download and graph-building tasks."""
 
@@ -89,6 +115,7 @@ def main() -> int:
     parser.add_argument("--data-root", default="data/raw/ctu13", help="Directory containing extracted CTU-13 flow files.")
     parser.add_argument("--processed-dir", default="data/processed", help="Directory for serialized `.pt` graphs.")
     parser.add_argument("--build-graphs", action="store_true", help="Build PyG graphs and save them to the processed directory.")
+    parser.add_argument("--dry-run", action="store_true", help="Print scenario shapes and label distributions without building graphs.")
     selection_group = parser.add_mutually_exclusive_group()
     selection_group.add_argument("--scenarios", default=None, help="Comma-separated scenario ids to process, e.g. 1,2,3.")
     selection_group.add_argument("--all", action="store_true", help="Process all discovered scenarios.")
@@ -106,6 +133,12 @@ def main() -> int:
     elif args.download and not archive_path.exists():
         raise FileNotFoundError(f"Archive not found after download: {archive_path}")
 
+    if args.dry_run:
+        loader = CTU13Loader(data_root=args.data_root)
+        scenario_ids = _parse_scenarios(args.scenarios, all_selected=args.all)
+        _print_dry_run_summary(loader, scenario_ids)
+        return 0
+
     if args.build_graphs:
         loader = CTU13Loader(data_root=args.data_root)
         scenario_ids = _parse_scenarios(args.scenarios, all_selected=args.all)
@@ -120,7 +153,7 @@ def main() -> int:
         graphs = builder.build_all_scenarios(scenario_ids=scenario_ids)
         save_processed_graphs(graphs, args.processed_dir)
 
-    if not args.download and not args.build_graphs and not archive_path.exists():
+    if not args.download and not args.build_graphs and not args.dry_run and not archive_path.exists():
         raise FileNotFoundError(f"Archive not found: {archive_path}")
     return 0
 
