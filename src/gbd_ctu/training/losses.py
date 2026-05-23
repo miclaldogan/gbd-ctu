@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover - optional during static inspection
 class FocalLoss(nn.Module):
     """Multi-class focal loss with optional class weighting."""
 
-    def __init__(self, gamma: float = 2.0, alpha: float | None = None) -> None:
+    def __init__(self, gamma: float = 2.0, alpha: float = 0.25) -> None:
         if torch is None or functional is None:
             raise ImportError("torch is required to instantiate FocalLoss.")
         super().__init__()
