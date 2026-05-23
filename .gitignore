@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# PyTorch and model artifacts
+artifacts/checkpoints/
+artifacts/graphs/
+*.pt
+*.pth
+
+# Data files
+data/
+*.pcap
+*.binetflow
+*.biargus
+
+# Experiment tracking
+wandb/
+
+# Notebooks and editor state
+.ipynb_checkpoints/
+.vscode/

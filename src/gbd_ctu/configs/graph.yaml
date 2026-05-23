@@ -1,0 +1,9 @@
+graph:
+  train_size: 0.6
+  val_size: 0.2
+  seed: 42
+  node_feature_dim: 6
+  edge_feature_dim: 22
+  min_flows_per_node: 1
+  self_loops: false
+  undirected_option: false

@@ -1,0 +1,29 @@
+paths:
+  data_root: data/ctu13
+  graph_dir: artifacts/graphs
+  checkpoint: artifacts/checkpoints/gnn_model.pt
+  report_dir: artifacts/reports
+
+graph:
+  mode: flow
+  sequence_stride: 1
+  train_size: 0.6
+  val_size: 0.2
+  seed: 42
+
+model:
+  hidden_dim: 64
+  heads: 4
+  dropout: 0.2
+
+training:
+  epochs: 20
+  batch_size: 4
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  seed: 42
+  wandb_project: null
+
+baselines:
+  random_state: 42
+  n_estimators: 400

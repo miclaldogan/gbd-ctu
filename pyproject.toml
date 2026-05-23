@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gbd-ctu"
+version = "0.1.0"
+description = "Graph neural network botnet detection on CTU-13 with classical baselines."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "GBD-CTU Maintainers" }
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/gbd_ctu/tests"]
+pythonpath = ["src"]

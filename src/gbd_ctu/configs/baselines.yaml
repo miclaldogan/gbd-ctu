@@ -1,0 +1,13 @@
+baselines:
+  random_state: 42
+  random_forest:
+    n_estimators: 400
+    max_depth: null
+    n_jobs: -1
+  xgboost:
+    n_estimators: 250
+    max_depth: 6
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    tree_method: hist
