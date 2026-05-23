@@ -1,3 +1,6 @@
+# Which model to instantiate: graphsage | gat | hybrid
+model_type: hybrid
+
 model:
   family: hybrid
   in_channels: null
@@ -11,3 +14,15 @@ graphsage:
   hidden_dim: 128
   dropout: 0.3
   num_layers: 3
+
+gat:
+  hidden_channels: 64
+  embed_channels: 32
+  heads: 4
+  dropout: 0.3
+  out_channels: 2
+
+hybrid:
+  embed_channels: 32
+  dropout: 0.3
+  out_channels: 2
