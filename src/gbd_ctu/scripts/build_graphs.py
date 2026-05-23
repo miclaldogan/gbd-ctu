@@ -22,6 +22,7 @@ def main() -> int:
     parser.add_argument("--min-flows-per-node", type=int, default=1)
     parser.add_argument("--self-loops", action="store_true")
     parser.add_argument("--undirected", action="store_true")
+    parser.add_argument("--all", action="store_true", help="Process all discovered scenarios (default behaviour).")
     args = parser.parse_args()
 
     for path in discover_flow_files(args.data_root):
