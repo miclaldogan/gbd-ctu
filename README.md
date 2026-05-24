@@ -158,6 +158,22 @@ Equivalent CLI call:
 python -m gbd_ctu compare-baselines --graph-dir artifacts/graphs --report-dir artifacts/reports --gnn-report artifacts/reports/gnn_metrics.csv
 ```
 
+### Generate Comparison Tables and Figures
+
+```bash
+python -m gbd_ctu.scripts.compare_models --results-dir artifacts/reports/ --output-dir artifacts/comparison/
+```
+
+Produces per-metric wide-format CSV tables, a Markdown summary, and figures:
+
+| Figure | Description |
+| --- | --- |
+| [auc\_by\_scenario.png](artifacts/comparison/figures/auc_by_scenario.png) | Grouped bar chart — AUC per scenario by model |
+| [f1\_by\_scenario.png](artifacts/comparison/figures/f1_by_scenario.png) | Grouped bar chart — F1 per scenario by model |
+| [roc\_curves.png](artifacts/comparison/figures/roc_curves.png) | ROC curves for all models |
+
+All figures are saved at 300 dpi (PNG) and vector quality (PDF) under `artifacts/comparison/figures/`.
+
 ## Results Table
 
 The table below is initialized for complete scenario-wise reporting and is meant to be overwritten by reproducible experiment outputs from `artifacts/reports/comparison.csv`.
