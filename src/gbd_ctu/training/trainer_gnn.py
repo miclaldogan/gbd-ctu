@@ -180,6 +180,7 @@ def train_gnn(
     early_stop_patience: int = 10,
     lr_scheduler_patience: int = 5,
     lr_scheduler_factor: float = 0.5,
+    lr_scheduler_min_lr: float = 1e-5,
     num_neighbors: list[int] | None = None,
     dry_run: bool = False,
     scenario_ids: list[int] | None = None,
@@ -230,7 +231,8 @@ def train_gnn(
                          heads, num_layers, dropout)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", patience=lr_scheduler_patience, factor=lr_scheduler_factor
+        optimizer, mode="max", patience=lr_scheduler_patience,
+        factor=lr_scheduler_factor, min_lr=lr_scheduler_min_lr,
     )
     criterion = FocalLoss(gamma=focal_gamma, alpha=focal_alpha)
 
@@ -252,6 +254,7 @@ def train_gnn(
     best_val_auc = float("-inf")
     epochs_no_improve = 0
     history: list[dict[str, float]] = []
+    stopped_epoch: int = epochs
 
     for epoch in range(1, epochs + 1):
         train_loss = _train_one_epoch(model, graphs, criterion, optimizer,
@@ -275,12 +278,14 @@ def train_gnn(
 
         scheduler.step(val_auc if not np.isnan(val_auc) else 0.0)
 
+        current_lr = float(optimizer.param_groups[0]["lr"])
         record: dict[str, float] = {
             "epoch": float(epoch),
             "train_loss": train_loss,
             "val_loss": val_loss,
             "val_auc": val_auc,
             "val_f1": val_f1,
+            "lr": current_lr,
         }
         history.append(record)
         _logger.info("epoch %d | train_loss=%.4f val_loss=%.4f val_auc=%.4f val_f1=%.4f",
@@ -330,6 +335,7 @@ def train_gnn(
             if epochs_no_improve >= early_stop_patience:
                 _logger.info("Early stopping at epoch %d (no improvement for %d epochs)",
                              epoch, early_stop_patience)
+                stopped_epoch = epoch
                 break
 
     # ---- checkpoint ---------------------------------------------------------
@@ -353,6 +359,12 @@ def train_gnn(
     history_path = checkpoint.with_suffix(".history.json")
     history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
+    # Per-scenario checkpoints: {model_type}_scenario{sid}.pt
+    for graph in graphs:
+        sid = getattr(graph, "scenario_id", 0)
+        scenario_ckpt = checkpoint.parent / f"{family}_scenario{sid}.pt"
+        torch.save(best_state, scenario_ckpt)
+
     report = metrics_frame(_evaluate_split(model, graphs, split="val"))
     if run is not None:
         run.finish()
@@ -362,6 +374,8 @@ def train_gnn(
         "history_path": str(history_path),
         "best_val_auc": best_val_auc,
         "epochs_trained": len(history),
+        "stopped_epoch": stopped_epoch,
+        "history": history,
         "validation_report": report.to_dict(orient="records"),
     }
 

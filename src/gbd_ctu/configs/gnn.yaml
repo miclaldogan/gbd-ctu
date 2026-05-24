@@ -10,6 +10,17 @@ model:
   num_layers: 2
   dropout: 0.2
 
+training:
+  epochs: 20
+  batch_size: 512
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  early_stop_patience: 10
+  lr_scheduler_patience: 5
+  lr_scheduler_factor: 0.5
+  lr_scheduler_min_lr: 1.0e-5
+  num_neighbors: [10, 5]
+
 graphsage:
   hidden_dim: 128
   dropout: 0.3
