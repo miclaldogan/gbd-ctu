@@ -164,19 +164,19 @@ The table below is initialized for complete scenario-wise reporting and is meant
 
 | Scenario | GNN AUC | GNN F1 | XGBoost AUC | XGBoost F1 | Random Forest AUC | Random Forest F1 | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 42 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
-| 43 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
-| 44 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
-| 45 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
-| 46 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
-| 47 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
-| 48 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
-| 49 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
-| 50 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
-| 51 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
-| 52 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
-| 53 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
-| 54 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
+| 1 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
+| 2 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
+| 3 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
+| 4 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
+| 5 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
+| 6 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
+| 7 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
+| 8 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
+| 9 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
+| 10 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
+| 11 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
+| 12 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
+| 13 | pending | pending | pending | pending | pending | pending | Awaiting experiment run |
 
 ## Citation
 
