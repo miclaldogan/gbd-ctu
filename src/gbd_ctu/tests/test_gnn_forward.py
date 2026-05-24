@@ -313,3 +313,83 @@ def test_factory_raises_on_unknown_model_type() -> None:
     with pytest.raises(ValueError, match="Unknown model_type"):
         build_gnn_from_config(in_channels=6, config={"model_type": "transformer"})
 
+
+# ---------------------------------------------------------------------------
+# Issue #10 — architecture spec compliance
+# ---------------------------------------------------------------------------
+
+def test_graphsage_param_count_in_expected_range() -> None:
+    """GraphSAGENodeClassifier(6, 128, 2) param count must be in a reasonable range
+    for the pyramid encoder spec (in→128→64→32→2).  Computed value is ~22 K."""
+    model = GraphSAGENodeClassifier(in_channels=6, hidden_channels=128, out_channels=2, num_layers=3)
+    assert 15_000 <= model.num_parameters <= 50_000, (
+        f"Unexpected param count {model.num_parameters}; check pyramid architecture."
+    )
+
+
+def test_gat_first_layer_output_dim_256() -> None:
+    """GATConv(in→64, heads=4, concat=True) must produce 256-dim node embeddings."""
+    data = _small_graph(num_nodes=5, in_channels=6)
+    model = GATNodeClassifier(in_channels=6, hidden_channels=64, embed_channels=32, heads=4)
+    captured: list = []
+
+    def _hook(module, inp, out):
+        captured.append(out)
+
+    handle = model.gat1.register_forward_hook(_hook)
+    model.eval()
+    with torch.no_grad():
+        model(data)
+    handle.remove()
+
+    assert len(captured) == 1
+    assert captured[0].shape == (5, 256), (
+        f"Expected gat1 output (5, 256), got {captured[0].shape}"
+    )
+
+
+def test_hybrid_both_branches_activate_via_hook() -> None:
+    """Both sage_branch and gat_branch must execute during a forward pass."""
+    data = _small_graph(num_nodes=5, in_channels=6)
+    model = GraphSageGATHybridClassifier(in_channels=6, embed_channels=32, out_channels=2)
+    sage_outputs: list = []
+    gat_outputs: list = []
+
+    h1 = model.sage_branch.register_forward_hook(lambda m, i, o: sage_outputs.append(o))
+    h2 = model.gat_branch.register_forward_hook(lambda m, i, o: gat_outputs.append(o))
+    model.eval()
+    with torch.no_grad():
+        logits = model(data)
+    h1.remove()
+    h2.remove()
+
+    assert len(sage_outputs) == 1, "sage_branch did not execute"
+    assert len(gat_outputs) == 1, "gat_branch did not execute"
+    assert sage_outputs[0].shape == (5, 32)
+    assert gat_outputs[0].shape == (5, 32)
+    assert logits.shape == (5, 2)
+
+
+def test_hybrid_sage_branch_has_two_conv_layers() -> None:
+    """SAGE branch must have two SAGEConv layers (conv1, conv2)."""
+    model = GraphSageGATHybridClassifier(in_channels=6, embed_channels=32)
+    assert hasattr(model.sage_branch, "conv1"), "sage_branch missing conv1"
+    assert hasattr(model.sage_branch, "conv2"), "sage_branch missing conv2"
+    # First conv: in → sage_hidden (128); second conv: sage_hidden → embed (32)
+    assert model.sage_branch.bn1.num_features == 128
+    assert model.sage_branch.bn2.num_features == 32
+
+
+def test_hybrid_gat_branch_first_layer_uses_four_heads() -> None:
+    """GAT branch conv1 must use heads=4 and concat=True (→ 256-dim output)."""
+    model = GraphSageGATHybridClassifier(in_channels=6, embed_channels=32)
+    assert model.gat_branch.conv1.heads == 4
+    assert model.gat_branch.conv1.concat is True
+
+
+def test_hybrid_gat_branch_second_layer_single_head() -> None:
+    """GAT branch conv2 must use heads=1 and concat=False (→ embed_channels output)."""
+    model = GraphSageGATHybridClassifier(in_channels=6, embed_channels=32)
+    assert model.gat_branch.conv2.heads == 1
+    assert model.gat_branch.conv2.concat is False
+
