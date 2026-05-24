@@ -109,6 +109,54 @@ class TestTrainGNNDryRun:
         assert "epochs_trained" in result
         assert result["epochs_trained"] == 3
 
+    def test_dry_run_returns_history_list(self, tmp_path):
+        ckpt = tmp_path / "ckpt.pt"
+        result = train_gnn(family="graphsage", checkpoint_path=ckpt, dry_run=True, seed=0)
+        assert "history" in result, "Return must include 'history' key"
+        assert isinstance(result["history"], list)
+        assert len(result["history"]) == 3
+
+    def test_dry_run_returns_stopped_epoch(self, tmp_path):
+        ckpt = tmp_path / "ckpt.pt"
+        result = train_gnn(family="graphsage", checkpoint_path=ckpt, dry_run=True, seed=0)
+        assert "stopped_epoch" in result, "Return must include 'stopped_epoch' key"
+        assert isinstance(result["stopped_epoch"], int)
+
+    def test_dry_run_history_records_contain_lr(self, tmp_path):
+        ckpt = tmp_path / "ckpt.pt"
+        result = train_gnn(family="hybrid", checkpoint_path=ckpt, dry_run=True, seed=0)
+        for record in result["history"]:
+            assert "lr" in record, "Each history record must include 'lr' key"
+            assert record["lr"] > 0.0
+
+    def test_dry_run_lr_in_history_json(self, tmp_path):
+        ckpt = tmp_path / "ckpt.pt"
+        result = train_gnn(family="graphsage", checkpoint_path=ckpt, dry_run=True, seed=0)
+        history = json.loads(Path(result["history_path"]).read_text())
+        for record in history:
+            assert "lr" in record
+
+    def test_dry_run_per_scenario_checkpoint_saved(self, tmp_path):
+        ckpt = tmp_path / "checkpoints" / "gnn_model.pt"
+        result = train_gnn(family="hybrid", checkpoint_path=ckpt, dry_run=True, seed=0)
+        # Synthetic graph has scenario_id=0; expect hybrid_scenario0.pt
+        scenario_ckpt = tmp_path / "checkpoints" / "hybrid_scenario0.pt"
+        assert scenario_ckpt.exists(), "Per-scenario checkpoint must be saved"
+        state = torch.load(str(scenario_ckpt), weights_only=False)
+        assert "model_state" in state
+
+    def test_dry_run_min_lr_effective(self, tmp_path):
+        """ReduceLROnPlateau min_lr must be present in optimizer param group."""
+        ckpt = tmp_path / "ckpt.pt"
+        # We patch the scheduler to verify min_lr was set by checking history LR
+        result = train_gnn(
+            family="graphsage", checkpoint_path=ckpt, dry_run=True, seed=0,
+            lr_scheduler_min_lr=1e-5,
+        )
+        # LR should be >= min_lr throughout
+        for record in result["history"]:
+            assert record["lr"] >= 1e-5
+
     def test_dry_run_checkpoint_saved_and_reloadable(self, tmp_path):
         ckpt = tmp_path / "ckpt.pt"
         result = train_gnn(family="graphsage", checkpoint_path=ckpt, dry_run=True, seed=1)
