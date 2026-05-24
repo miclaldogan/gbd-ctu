@@ -12,6 +12,7 @@ from gbd_ctu.evaluation.compare import (
     wilcoxon_hybrid_vs_baseline,
 )
 from gbd_ctu.evaluation.metrics import (
+    _fpr_at_tpr,
     auc_roc,
     classification_metrics,
     confusion_matrix_plot,
@@ -20,21 +21,36 @@ from gbd_ctu.evaluation.metrics import (
     metrics_frame,
     precision_recall,
 )
+from gbd_ctu.evaluation.plots import (
+    PALETTE,
+    confusion_matrix_plot as plots_confusion_matrix_plot,
+    roc_pr_curves,
+    scenario_comparison_heatmap,
+)
 from gbd_ctu.evaluation.scenario_eval import evaluate_all_scenarios, evaluate_gnn_checkpoint
 
 __all__ = [
-    "auc_roc",
+    # compare
     "build_comparison_table",
-    "classification_metrics",
     "compare_reports",
-    "confusion_matrix_plot",
-    "evaluate_all_scenarios",
-    "evaluate_gnn_checkpoint",
-    "f1_botnet",
-    "false_positive_rate",
     "generate_figures",
-    "metrics_frame",
-    "precision_recall",
     "run_comparison",
     "wilcoxon_hybrid_vs_baseline",
+    # metrics
+    "_fpr_at_tpr",
+    "auc_roc",
+    "classification_metrics",
+    "confusion_matrix_plot",
+    "f1_botnet",
+    "false_positive_rate",
+    "metrics_frame",
+    "precision_recall",
+    # plots
+    "PALETTE",
+    "plots_confusion_matrix_plot",
+    "roc_pr_curves",
+    "scenario_comparison_heatmap",
+    # scenario_eval
+    "evaluate_all_scenarios",
+    "evaluate_gnn_checkpoint",
 ]
