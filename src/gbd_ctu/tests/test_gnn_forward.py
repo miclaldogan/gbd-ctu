@@ -14,7 +14,7 @@ pyg_data = pytest.importorskip("torch_geometric.data")
 from gbd_ctu.models.gnn.gat import GATNodeClassifier
 from gbd_ctu.models.gnn.graphsage import GraphSAGENodeClassifier
 from gbd_ctu.models.gnn.hybrid import GraphSageGATHybridClassifier
-from gbd_ctu.models.gnn import build_gnn_from_config
+from gbd_ctu.models.gnn import build_gnn_from_config, build_gnn
 
 
 # ---------------------------------------------------------------------------
@@ -392,4 +392,88 @@ def test_hybrid_gat_branch_second_layer_single_head() -> None:
     model = GraphSageGATHybridClassifier(in_channels=6, embed_channels=32)
     assert model.gat_branch.conv2.heads == 1
     assert model.gat_branch.conv2.concat is False
+
+
+# ---------------------------------------------------------------------------
+# Issue #11 — build_gnn factory + gradient-flow acceptance criteria
+# ---------------------------------------------------------------------------
+
+def test_build_gnn_factory_builds_hybrid() -> None:
+    """build_gnn must instantiate a hybrid model when model_type=hybrid."""
+    config = {"in_channels": 6, "model_type": "hybrid", "hybrid": {"embed_channels": 16}}
+    model = build_gnn(config)
+    assert isinstance(model, GraphSageGATHybridClassifier)
+    data = _small_graph(num_nodes=5, in_channels=6)
+    assert model(data).shape == (5, 2)
+
+
+def test_build_gnn_factory_builds_graphsage() -> None:
+    """build_gnn must instantiate GraphSAGENodeClassifier when model_type=graphsage."""
+    config = {"in_channels": 6, "model_type": "graphsage"}
+    model = build_gnn(config)
+    assert isinstance(model, GraphSAGENodeClassifier)
+    data = _small_graph(num_nodes=5, in_channels=6)
+    assert model(data).shape == (5, 2)
+
+
+def test_build_gnn_factory_builds_gat() -> None:
+    """build_gnn must instantiate GATNodeClassifier when model_type=gat."""
+    config = {"in_channels": 6, "model_type": "gat"}
+    model = build_gnn(config)
+    assert isinstance(model, GATNodeClassifier)
+    data = _small_graph(num_nodes=5, in_channels=6)
+    assert model(data).shape == (5, 2)
+
+
+def test_build_gnn_raises_when_in_channels_missing() -> None:
+    """build_gnn must raise ValueError when in_channels is absent."""
+    with pytest.raises(ValueError, match="in_channels"):
+        build_gnn({"model_type": "hybrid"})
+
+
+def test_build_gnn_exported_in_package() -> None:
+    """build_gnn must be importable directly from gbd_ctu.models.gnn."""
+    from gbd_ctu.models.gnn import build_gnn as _bg
+    assert callable(_bg)
+
+
+def test_hybrid_gradients_flow_through_both_branches() -> None:
+    """Both SAGE and GAT branches must contribute non-zero gradients to data.x."""
+    torch.manual_seed(42)
+    data = _small_graph(num_nodes=10, in_channels=6)
+    data.x = data.x.requires_grad_(True)
+
+    model = GraphSageGATHybridClassifier(in_channels=6, embed_channels=32, out_channels=2)
+    model.train()
+    logits = model(data)
+    # Use sum of all logits as scalar loss proxy
+    logits.sum().backward()
+
+    assert data.x.grad is not None, "No gradient on data.x after backward"
+    assert data.x.grad.shape == data.x.shape
+    assert not torch.all(data.x.grad == 0), "Gradient on data.x is all-zero"
+
+
+def test_graphsage_gradients_flow_to_input() -> None:
+    """GraphSAGE must propagate gradients back to data.x."""
+    torch.manual_seed(0)
+    data = _small_graph(num_nodes=8, in_channels=6)
+    data.x = data.x.requires_grad_(True)
+    model = GraphSAGENodeClassifier(in_channels=6, hidden_channels=64, out_channels=2, num_layers=2)
+    model.train()
+    model(data).sum().backward()
+    assert data.x.grad is not None
+    assert not torch.all(data.x.grad == 0)
+
+
+def test_gat_gradients_flow_to_input() -> None:
+    """GAT must propagate gradients back to data.x."""
+    torch.manual_seed(0)
+    data = _small_graph(num_nodes=8, in_channels=6)
+    data.x = data.x.requires_grad_(True)
+    model = GATNodeClassifier(in_channels=6, hidden_channels=64, embed_channels=32, heads=4)
+    model.train()
+    model(data).sum().backward()
+    assert data.x.grad is not None
+    assert not torch.all(data.x.grad == 0)
 

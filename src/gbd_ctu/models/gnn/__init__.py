@@ -5,8 +5,12 @@ botnet classification on CTU-13 IP communication graphs.
 
 Factory
 -------
-Use :func:`build_gnn_from_config` to instantiate any model from a YAML config
-that contains a ``model_type`` key (``graphsage`` | ``gat`` | ``hybrid``).
+Use :func:`build_gnn` to instantiate any model from a config dict that
+includes an ``in_channels`` key and a ``model_type`` key
+(``graphsage`` | ``gat`` | ``hybrid``).
+
+The lower-level :func:`build_gnn_from_config` accepts ``in_channels``
+explicitly and is kept for backward compatibility.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ __all__ = [
     "GATNodeClassifier",
     "GraphSAGENodeClassifier",
     "GraphSageGATHybridClassifier",
+    "build_gnn",
     "build_gnn_from_config",
 ]
 
@@ -78,3 +83,38 @@ def build_gnn_from_config(in_channels: int, config: dict):
     raise ValueError(
         f"Unknown model_type '{model_type}'. Choose from: graphsage, gat, hybrid."
     )
+
+
+def build_gnn(config: dict):
+    """Instantiate a GNN model from a self-contained config dict.
+
+    This is the primary factory.  The config must include an ``in_channels``
+    key alongside the ``model_type`` and any model-specific sub-dicts.
+
+    Parameters
+    ----------
+    config:
+        Dictionary (e.g. loaded from ``configs/gnn.yaml``) containing at
+        minimum ``in_channels`` (int) and optionally ``model_type`` and
+        model-specific hyper-parameter sub-dicts.
+
+    Returns
+    -------
+    nn.Module
+        The instantiated classifier.
+
+    Raises
+    ------
+    ValueError
+        If ``in_channels`` is missing or ``model_type`` is unknown.
+
+    Examples
+    --------
+    >>> model = build_gnn({"in_channels": 6, "model_type": "hybrid"})
+    """
+    in_channels = config.get("in_channels")
+    if in_channels is None:
+        raise ValueError(
+            "'in_channels' must be present in the config dict passed to build_gnn()."
+        )
+    return build_gnn_from_config(in_channels=int(in_channels), config=config)
