@@ -18,11 +18,14 @@ from typing import Any, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.metrics import (
+    average_precision_score,
     confusion_matrix,
     f1_score,
+    matthews_corrcoef,
     precision_score,
     recall_score,
     roc_auc_score,
+    roc_curve,
 )
 
 try:
@@ -32,6 +35,31 @@ try:
     _HAS_MPL = True
 except ImportError:  # pragma: no cover - optional
     _HAS_MPL = False
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+def _fpr_at_tpr(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    tpr_target: float = 0.95,
+) -> float:
+    """Return the FPR at the smallest threshold where TPR >= *tpr_target*.
+
+    Returns ``float('nan')`` when only one class is present or the target TPR
+    is never reached in the ROC curve.
+    """
+    true_arr = np.asarray(y_true, dtype=int)
+    score_arr = np.asarray(y_score, dtype=float)
+    if np.unique(true_arr).shape[0] < 2:
+        return float("nan")
+    fpr_arr, tpr_arr, _ = roc_curve(true_arr, score_arr)
+    above = np.where(tpr_arr >= tpr_target)[0]
+    if len(above) == 0:
+        return float("nan")
+    return float(fpr_arr[above[0]])
 
 
 # ---------------------------------------------------------------------------
@@ -136,23 +164,27 @@ def confusion_matrix_plot(
 # ---------------------------------------------------------------------------
 
 def classification_metrics(y_true: np.ndarray | list[int], y_score: np.ndarray | list[float], threshold: float = 0.5) -> dict[str, Any]:
-    """Compute AUC, F1, precision, recall, FPR, and supporting metrics."""
+    """Compute AUC, F1, precision, recall, FPR, AUPRC, MCC, FPR@TPR95, and supporting metrics."""
 
     true_array = np.asarray(y_true, dtype=int)
     score_array = np.asarray(y_score, dtype=float)
     pred_array = (score_array >= threshold).astype(int)
     tn, fp, fn, tp = confusion_matrix(true_array, pred_array, labels=[0, 1]).ravel()
-    metrics = {
+    metrics: dict[str, Any] = {
         "auc": float("nan"),
+        "auprc": float("nan"),
+        "mcc": float(matthews_corrcoef(true_array, pred_array)),
         "f1": f1_score(true_array, pred_array, zero_division=0),
         "precision": precision_score(true_array, pred_array, zero_division=0),
         "recall": recall_score(true_array, pred_array, zero_division=0),
         "fpr": float(fp / max(fp + tn, 1)),
+        "fpr_at_tpr95": _fpr_at_tpr(true_array, score_array, tpr_target=0.95),
         "support": int(true_array.shape[0]),
         "botnet_rate": float(np.mean(true_array)) if true_array.size else 0.0,
     }
     if np.unique(true_array).shape[0] > 1:
         metrics["auc"] = roc_auc_score(true_array, score_array)
+        metrics["auprc"] = float(average_precision_score(true_array, score_array))
     return metrics
 
 
@@ -167,10 +199,13 @@ def metrics_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
         "scenario",
         "split",
         "auc",
+        "auprc",
+        "mcc",
         "f1",
         "precision",
         "recall",
         "fpr",
+        "fpr_at_tpr95",
         "support",
         "botnet_rate",
     ]

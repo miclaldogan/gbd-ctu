@@ -55,7 +55,7 @@ except ImportError:  # pragma: no cover
 
 _GNN_MODELS = {"graphsage", "gat", "hybrid"}
 _BASELINE_MODELS = {"xgboost", "random_forest", "randomforest", "rf"}
-_METRICS = ["auc", "f1", "fpr"]
+_METRICS = ["auc", "auprc", "mcc", "f1", "fpr", "fpr_at_tpr95"]
 
 # Column display names used in the wide table
 _MODEL_DISPLAY = {
@@ -125,7 +125,7 @@ def build_comparison_table(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
         # Determine best model per row (for AUC/F1 highest = best; for FPR lowest = best)
         model_cols = [c for c in pivot.columns if c not in ("scenario_id", "scenario")]
         if model_cols:
-            if metric == "fpr":
+            if metric in ("fpr", "fpr_at_tpr95"):
                 pivot["Best Model"] = pivot[model_cols].idxmin(axis=1)
             else:
                 pivot["Best Model"] = pivot[model_cols].idxmax(axis=1)
