@@ -20,9 +20,6 @@ try:
 except ImportError:  # pragma: no cover - optional during static inspection
     XGBClassifier = None
 
-import numpy as np
-import pandas as pd
-
 
 class XGBoostBaseline:
     """Typed wrapper around XGBClassifier for consistent trainer integration.
@@ -56,23 +53,6 @@ class XGBoostBaseline:
         )
         self.model: XGBClassifier | None = None
         self._feature_names: list[str] | None = None
-    
-    def fit(self, x, y):
-        pos = int(np.sum(y))
-        neg = len(y) - pos
-        spw = neg / max(pos, 1)
-        self.model.set_params(scale_pos_weight=spw)
-        self.model.fit(x, y)
-        return self
-
-    def predict(self, x) -> np.ndarray:
-        return self.model.predict(x)
-
-    def feature_importance(self) -> pd.DataFrame:
-        scores = self.model.feature_importances_
-        return pd.DataFrame({"feature": range(len(scores)), "importance": scores})\
-            .sort_values("importance", ascending=False)\
-            .reset_index(drop=True)
 
     def fit(
         self,

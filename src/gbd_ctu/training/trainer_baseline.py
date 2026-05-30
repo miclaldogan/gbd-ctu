@@ -140,8 +140,8 @@ def train_baselines(
         
         # Tüm fold'ların ortalama ve standart sapmasını hesaplayıp ana kayda ekle
         df_folds = pd.DataFrame(fold_metrics)
-        mean_metrics = df_folds.mean().to_dict()
-        std_metrics = df_folds.std().to_dict()
+        mean_metrics = df_folds.mean(numeric_only=True).to_dict()
+        std_metrics = df_folds.std(numeric_only=True).to_dict()
         
         final_record = {"model": model_name}
         for k in mean_metrics:
