@@ -70,19 +70,35 @@ class GATNodeClassifier(nn.Module):
             hidden_channels, heads, embed_channels, dropout, self.num_parameters,
         )
 
-    def forward(self, data) -> "torch.Tensor":
+    def forward(self, data, return_attention: bool = False):
         """Compute per-node logits.
 
         Parameters
         ----------
         data:
             PyG ``Data`` object with ``x`` and ``edge_index``.
+        return_attention:
+            When ``True`` return ``(logits, attention_dict)`` where
+            ``attention_dict`` maps ``"layer_0"`` / ``"layer_1"`` to tensors
+            of shape ``[num_edges, num_heads]``.
 
         Returns
         -------
-        torch.Tensor
-            Shape ``[num_nodes, out_channels]``.
+        torch.Tensor or tuple
+            Logits of shape ``[num_nodes, out_channels]``, or
+            ``(logits, {"layer_0": alpha_0, "layer_1": alpha_1})`` when
+            ``return_attention=True``.
         """
+        if return_attention:
+            E = data.edge_index.shape[1]
+            out1, (_, alpha1) = self.gat1(data.x, data.edge_index, return_attention_weights=True)
+            out1 = functional.elu(out1)
+            out1 = functional.dropout(out1, p=self.dropout_prob, training=self.training)
+            out2, (_, alpha2) = self.gat2(out1, data.edge_index, return_attention_weights=True)
+            out2 = functional.elu(out2)
+            logits = self.classifier(out2)
+            return logits, {"layer_0": alpha1[:E], "layer_1": alpha2[:E]}
+
         x = functional.elu(self.gat1(data.x, data.edge_index))
         x = functional.dropout(x, p=self.dropout_prob, training=self.training)
         x = functional.elu(self.gat2(x, data.edge_index))
