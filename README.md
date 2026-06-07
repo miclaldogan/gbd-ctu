@@ -1,5 +1,7 @@
 # GNN-Based Botnet Traffic Detection on CTU-13 (GBD-CTU)
 
+[![CI](https://github.com/miclaldogan/gbd-ctu/actions/workflows/ci.yml/badge.svg)](https://github.com/miclaldogan/gbd-ctu/actions/workflows/ci.yml)
+
 GBD-CTU is a research-oriented repository for botnet traffic detection on the CTU-13 benchmark. The project treats CTU-13 bidirectional flows as the canonical event representation, projects communication structure into a graph, and evaluates a hybrid GraphSAGE + GAT node classifier against classical tree-based baselines.
 
 ## Motivation

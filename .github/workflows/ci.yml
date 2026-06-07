@@ -36,4 +36,5 @@ jobs:
         run: PYTHONPATH=src flake8 src
 
       - name: Test
-        run: PYTHONPATH=src pytest --cov=src/gbd_ctu src/gbd_ctu/tests
+        run: |
+          PYTHONPATH=src pytest --cov=src/gbd_ctu --cov-report=term-missing --cov-fail-under=70 src/gbd_ctu/tests
