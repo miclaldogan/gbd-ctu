@@ -1,0 +1,65 @@
+# Ablation study configuration for GBD-CTU.
+#
+# Each entry defines one ablation variant. Missing keys fall back to the
+# defaults used in full_model (hybrid, focal loss, all features, directed graph).
+#
+# model keys: type (graphsage|gat|hybrid), hidden, heads, num_layers, dropout
+# graph keys: use_edge_attr, node_features (list or "all"), undirected, self_loops
+# loss  keys: type (focal|cross_entropy), gamma, alpha
+
+ablations:
+  - name: full_model
+    model:
+      type: hybrid
+      hidden: 128
+      dropout: 0.3
+    graph:
+      use_edge_attr: true
+      node_features: all
+    loss:
+      type: focal
+      gamma: 2.0
+      alpha: 0.75
+
+  - name: no_edge_features
+    graph:
+      use_edge_attr: false
+
+  - name: 3_node_features
+    graph:
+      node_features:
+        - flow_count
+        - total_bytes_sent
+        - botnet_flow_ratio
+
+  - name: cross_entropy_loss
+    loss:
+      type: cross_entropy
+
+  - name: 2layer_sage
+    model:
+      type: graphsage
+      num_layers: 2
+
+  - name: 4layer_sage
+    model:
+      type: graphsage
+      num_layers: 4
+
+  - name: gat_1head
+    model:
+      type: gat
+      heads: 1
+
+  - name: gat_8heads
+    model:
+      type: gat
+      heads: 8
+
+  - name: undirected_graph
+    graph:
+      undirected: true
+
+  - name: self_loops
+    graph:
+      self_loops: true
