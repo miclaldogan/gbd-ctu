@@ -71,7 +71,15 @@ class _GATBranch(nn.Module):
         self.conv2 = GATConv(hidden * heads, embed, heads=1, concat=False, dropout=dropout)
         self.dropout_prob = dropout
 
-    def forward(self, x, edge_index):  # type: ignore[override]
+    def forward(self, x, edge_index, return_attention: bool = False):  # type: ignore[override]
+        if return_attention:
+            E = edge_index.shape[1]
+            out1, (_, alpha1) = self.conv1(x, edge_index, return_attention_weights=True)
+            out1 = functional.elu(out1)
+            out1 = functional.dropout(out1, p=self.dropout_prob, training=self.training)
+            out2, (_, alpha2) = self.conv2(out1, edge_index, return_attention_weights=True)
+            out2 = functional.elu(out2)
+            return out2, {"layer_0": alpha1[:E], "layer_1": alpha2[:E]}
         x = functional.elu(self.conv1(x, edge_index))
         x = functional.dropout(x, p=self.dropout_prob, training=self.training)
         return functional.elu(self.conv2(x, edge_index))
@@ -133,21 +141,31 @@ class GraphSageGATHybridClassifier(nn.Module):
             sage_hidden, gat_hidden, gat_heads, embed_channels, dropout, self.num_parameters,
         )
 
-    def forward(self, data) -> "torch.Tensor":
+    def forward(self, data, return_attention: bool = False):
         """Compute per-node logits via parallel SAGE and GAT branches.
 
         Parameters
         ----------
         data:
             PyG ``Data`` object with ``x`` and ``edge_index``.
+        return_attention:
+            When ``True`` return ``(logits, attention_dict)`` where
+            ``attention_dict`` maps ``"layer_0"`` / ``"layer_1"`` to tensors
+            of shape ``[num_edges, num_heads]`` from the GAT branch.
 
         Returns
         -------
-        torch.Tensor
-            Shape ``[num_nodes, out_channels]``.
+        torch.Tensor or tuple
+            Logits of shape ``[num_nodes, out_channels]``, or
+            ``(logits, {"layer_0": alpha_0, "layer_1": alpha_1})`` when
+            ``return_attention=True``.
         """
         x, edge_index = data.x, data.edge_index
         sage_embed = self.sage_branch(x, edge_index)
+        if return_attention:
+            gat_embed, attn = self.gat_branch(x, edge_index, return_attention=True)
+            logits = self.classifier(torch.cat([sage_embed, gat_embed], dim=-1))
+            return logits, attn
         gat_embed = self.gat_branch(x, edge_index)
         return self.classifier(torch.cat([sage_embed, gat_embed], dim=-1))
 
