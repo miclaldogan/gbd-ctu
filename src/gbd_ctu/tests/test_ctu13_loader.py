@@ -185,3 +185,103 @@ def test_normalize_flow_frame_large_imbalanced_sample() -> None:
     frame = _normalize_flow_frame(pd.DataFrame(rows), scenario_name="test", scenario_id=99)
     assert int(frame["label_binary"].sum()) == 3
     assert len(frame) == 100
+
+
+# ---------------------------------------------------------------------------
+# CTU13Loader.available_scenarios()
+# ---------------------------------------------------------------------------
+
+def _make_loader_with_fake_files(tmp_path):
+    """Create a CTU13Loader pointing at a temp dir with synthetic .binetflow files."""
+    from gbd_ctu.data.ctu13_loader import CTU13Loader
+
+    # Write two minimal binetflow files so discover_flow_files finds them.
+    header = "StartTime,Dur,Proto,SrcAddr,Sport,Dir,DstAddr,Dport,State,sTos,dTos,TotPkts,TotBytes,SrcBytes,Label\n"
+    row = "2011-08-10 10:00:00,1.0,tcp,1.1.1.1,12345,->,2.2.2.2,80,CON,0,0,10,1024,512,Background\n"
+    for fname in ("capture20110810.binetflow", "capture20110811.binetflow"):
+        (tmp_path / fname).write_text(header + row, encoding="utf-8")
+
+    return CTU13Loader(data_root=str(tmp_path))
+
+
+def test_available_scenarios_returns_list(tmp_path) -> None:
+    """available_scenarios() must return a plain Python list."""
+    loader = _make_loader_with_fake_files(tmp_path)
+    result = loader.available_scenarios()
+    assert isinstance(result, list)
+
+
+def test_available_scenarios_returns_ints(tmp_path) -> None:
+    """Every element returned by available_scenarios() must be an integer."""
+    loader = _make_loader_with_fake_files(tmp_path)
+    for sid in loader.available_scenarios():
+        assert isinstance(sid, int), f"Expected int, got {type(sid)}: {sid!r}"
+
+
+def test_available_scenarios_count(tmp_path) -> None:
+    """available_scenarios() must discover exactly as many scenarios as files."""
+    loader = _make_loader_with_fake_files(tmp_path)
+    assert len(loader.available_scenarios()) == 2
+
+
+def test_available_scenarios_sorted(tmp_path) -> None:
+    """available_scenarios() must return IDs in ascending sorted order."""
+    loader = _make_loader_with_fake_files(tmp_path)
+    ids = loader.available_scenarios()
+    assert ids == sorted(ids)
+
+
+# ---------------------------------------------------------------------------
+# CTU13Loader._log_imbalance()
+# ---------------------------------------------------------------------------
+
+def _make_loader(tmp_path):
+    from gbd_ctu.data.ctu13_loader import CTU13Loader
+    return CTU13Loader(data_root=str(tmp_path))
+
+
+def _make_normalized_frame(n_botnet: int, n_background: int) -> pd.DataFrame:
+    """Build a minimal normalized frame (already has label_binary)."""
+    rows = []
+    for i in range(n_botnet + n_background):
+        rows.append({
+            "start_time": "2011-08-10 10:00:00",
+            "duration": 1.0, "proto": "tcp",
+            "src_addr": "1.1.1.1", "src_port": i,
+            "direction": "->", "dst_addr": "2.2.2.2", "dst_port": 80,
+            "state": "CON", "src_tos": 0, "dst_tos": 0,
+            "packets": 1, "bytes": 64, "src_bytes": 32,
+            "label": "Botnet" if i < n_botnet else "Background",
+            "label_binary": 1 if i < n_botnet else 0,
+            "scenario_name": "test", "scenario_id": 1,
+        })
+    return pd.DataFrame(rows)
+
+
+def test_log_imbalance_does_not_raise(tmp_path) -> None:
+    """_log_imbalance must complete without raising for a typical imbalanced frame."""
+    loader = _make_loader(tmp_path)
+    frame = _make_normalized_frame(n_botnet=10, n_background=90)
+    loader._log_imbalance(scenario_id=1, frame=frame)  # must not raise
+
+
+def test_log_imbalance_balanced_frame_does_not_raise(tmp_path) -> None:
+    """_log_imbalance must complete without raising even for a perfectly balanced frame."""
+    loader = _make_loader(tmp_path)
+    frame = _make_normalized_frame(n_botnet=50, n_background=50)
+    loader._log_imbalance(scenario_id=1, frame=frame)  # must not raise
+
+
+def test_log_imbalance_all_botnet_does_not_raise(tmp_path) -> None:
+    """_log_imbalance must not raise when every row is botnet (zero negatives)."""
+    loader = _make_loader(tmp_path)
+    frame = _make_normalized_frame(n_botnet=10, n_background=0)
+    loader._log_imbalance(scenario_id=99, frame=frame)  # must not raise
+
+
+def test_log_imbalance_no_botnet_does_not_raise(tmp_path) -> None:
+    """_log_imbalance must not raise when there are zero botnet flows (division guard)."""
+    loader = _make_loader(tmp_path)
+    frame = _make_normalized_frame(n_botnet=0, n_background=20)
+    loader._log_imbalance(scenario_id=2, frame=frame)  # must not raise (inf ratio branch)
+
