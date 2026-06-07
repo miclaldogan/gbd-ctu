@@ -23,7 +23,7 @@ try:
 except ImportError:  # pragma: no cover - optional during static inspection
     torch = None  # type: ignore[assignment]
     functional = None  # type: ignore[assignment]
-    nn = object  # type: ignore[assignment]
+    nn = type("nn", (), {"Module": object})()  # type: ignore[assignment]
     GATConv = None  # type: ignore[assignment]
 
 

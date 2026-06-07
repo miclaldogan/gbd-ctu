@@ -110,55 +110,42 @@ def train_baselines(
     except ImportError:
         pass
 
-    records: list[dict[str, Any]] = []
+    fold_records: list[dict[str, Any]] = []
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
-    
-    # Stratified K-Fold ayarı (5 parçaya bölüyoruz)
+
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
-    
+
     for model_name, estimator in models:
-        fold_metrics = [] # Her fold için sonuçları tutacağımız geçici liste
-        
-        # Eğitim verisini 5'e bölüp her biri için eğitiyoruz
         for fold, (train_idx, val_idx) in enumerate(skf.split(x_train, y_train)):
             x_fold_train, y_fold_train = x_train[train_idx], y_train[train_idx]
             x_fold_val, y_fold_val = x_train[val_idx], y_train[val_idx]
-            
-            # Modeli eğit
+
             estimator.fit(x_fold_train, y_fold_train)
-            
-            # Doğrulama metriklerini hesapla (val_idx üzerinden)
+
             probabilities = estimator.predict_proba(x_fold_val)[:, 1]
             metrics = classification_metrics(y_fold_val, probabilities)
-            metrics.update({"model": model_name, "fold": fold})
-            fold_metrics.append(metrics)
-            
-        # Modelin eğitilmiş son halini kaydet (Serialization)
-        model_path = destination / f"{model_name}.joblib"
-        joblib.dump(estimator, model_path)
-        
-        # Tüm fold'ların ortalama ve standart sapmasını hesaplayıp ana kayda ekle
-        df_folds = pd.DataFrame(fold_metrics)
-        mean_metrics = df_folds.mean(numeric_only=True).to_dict()
-        std_metrics = df_folds.std(numeric_only=True).to_dict()
-        
-        final_record = {"model": model_name}
-        for k in mean_metrics:
-            if k not in ["model", "fold"]:
-                final_record[f"{k}_mean"] = mean_metrics[k]
-                final_record[f"{k}_std"] = std_metrics[k]
-        
-        records.append(final_record)
-        
-    # Raporlama kısmı
-    report = pd.DataFrame(records)
-    report_path = destination / "baseline_cv_metrics.csv"
-    report.to_csv(report_path, index=False)
-    
+            metrics["model"] = model_name
+            metrics["fold"] = fold
+            fold_records.append(metrics)
+
+        joblib.dump(estimator, destination / f"{model_name}.joblib")
+
+    report = pd.DataFrame(fold_records)
+    report.to_csv(destination / "baseline_cv_metrics.csv", index=False)
+
+    metric_cols = [c for c in report.columns if c not in ("model", "fold")]
+    summary = (
+        report.groupby("model")[metric_cols]
+        .agg(["mean", "std"])
+        .round(4)
+    )
+    summary.columns = [f"{m}_{s}" for m, s in summary.columns]
+    summary.reset_index().to_csv(destination / "baseline_cv_summary.csv", index=False)
+
     (destination / "baseline_cv_metrics.json").write_text(
         json.dumps(report.to_dict(orient="records"), indent=2),
         encoding="utf-8",
     )
-    
+
     return report
