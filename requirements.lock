@@ -1,0 +1,26 @@
+# Locked dependencies for gbd-ctu
+# Generated: 2026-06-07
+# Python: 3.13
+# Platform: Linux
+#
+# Install with:
+#   pip install -r requirements.lock
+#
+# Note: torch-geometric, torch-scatter, torch-sparse require separate
+# installation matching your CUDA version. See:
+#   https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html
+
+torch==2.12.0
+numpy==2.4.4
+pandas==3.0.3
+scikit-learn==1.8.0
+scipy==1.17.1
+networkx==3.6.1
+matplotlib==3.10.9
+seaborn==0.13.2
+tqdm==4.67.3
+PyYAML==6.0.3
+joblib==1.5.3
+wandb==0.27.0
+pytest==9.0.3
+pytest-cov==7.1.0

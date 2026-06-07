@@ -342,7 +342,10 @@ def run_comparison(
         table.to_csv(csv_path, index=False)
         csv_paths[metric] = str(csv_path)
         md_lines.append(f"\n### {metric.upper()} Comparison\n")
-        md_lines.append(table.to_markdown(index=False))
+        try:
+            md_lines.append(table.to_markdown(index=False))
+        except ImportError:
+            md_lines.append(table.to_string(index=False))
 
     # Markdown table file
     md_path = output_dir / "comparison_report.md"

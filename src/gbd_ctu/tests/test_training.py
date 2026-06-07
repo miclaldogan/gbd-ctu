@@ -8,6 +8,7 @@ Covers:
 
 from __future__ import annotations
 
+import importlib
 import json
 import math
 from pathlib import Path
@@ -17,6 +18,9 @@ import torch
 
 from gbd_ctu.training.losses import FocalLoss
 from gbd_ctu.training.trainer_gnn import _make_synthetic_graph, train_gnn
+
+_pyg_available = importlib.util.find_spec("torch_geometric") is not None
+_skip_pyg = pytest.mark.skipif(not _pyg_available, reason="torch_geometric not installed")
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +99,8 @@ class TestTrainGNNDryRun:
 
     All run in ~3 epochs on a tiny synthetic graph; no CTU-13 data required.
     """
+
+    pytestmark = _skip_pyg
 
     def test_dry_run_completes_and_returns_keys(self, tmp_path):
         ckpt = tmp_path / "checkpoints" / "graphsage_1.pt"
@@ -207,6 +213,8 @@ class TestTrainGNNDryRun:
 # ---------------------------------------------------------------------------
 
 class TestMakeSyntheticGraph:
+    pytestmark = _skip_pyg
+
     def test_graph_has_expected_attributes(self):
         graph = _make_synthetic_graph(n_nodes=50, n_features=6)
         assert graph.num_nodes == 50
