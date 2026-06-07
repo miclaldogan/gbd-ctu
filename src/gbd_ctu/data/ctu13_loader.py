@@ -249,3 +249,116 @@ class CTU13Loader:
         for scenario_id in self.available_scenarios():
             loaded[scenario_id] = self.load_scenario(scenario_id)
         return loaded
+
+
+# ---------------------------------------------------------------------------
+# Dataset statistics
+# ---------------------------------------------------------------------------
+
+def scenario_statistics(frame: pd.DataFrame) -> dict:
+    """Compute per-scenario flow statistics from a normalised flow DataFrame.
+
+    Parameters
+    ----------
+    frame:
+        Normalised flow table as returned by ``CTU13Loader.load_scenario``.
+        Must contain ``label_binary``, ``label``, ``src_addr``, ``dst_addr``,
+        ``dst_port``, ``duration``, and ``start_time`` columns.
+
+    Returns
+    -------
+    dict with keys:
+        ``total_flows``, ``botnet_flows``, ``botnet_frac``,
+        ``normal_flows``, ``normal_frac``,
+        ``background_flows``, ``background_frac``,
+        ``unique_src_ips``, ``unique_dst_ips``,
+        ``mean_duration``, ``max_duration``,
+        ``botnet_host_ips``, ``unique_dst_ports``,
+        ``start_time``, ``end_time``.
+    """
+    total = len(frame)
+    if total == 0:
+        return {k: 0 for k in (
+            "total_flows", "botnet_flows", "botnet_frac",
+            "normal_flows", "normal_frac",
+            "background_flows", "background_frac",
+            "unique_src_ips", "unique_dst_ips",
+            "mean_duration", "max_duration",
+            "botnet_host_ips", "unique_dst_ports",
+            "start_time", "end_time",
+        )}
+
+    botnet_mask = frame["label_binary"] == 1
+    botnet_count = int(botnet_mask.sum())
+
+    label_lower = frame["label"].str.strip().str.lower()
+    normal_mask = label_lower.str.startswith("normal") | label_lower.str.startswith("benign")
+    background_mask = label_lower.str.contains("background", na=False)
+
+    if "start_time" in frame.columns:
+        times = pd.to_datetime(frame["start_time"], errors="coerce").dropna()
+        start_ts = times.min().isoformat() if not times.empty else None
+        end_ts = times.max().isoformat() if not times.empty else None
+    else:
+        start_ts = end_ts = None
+
+    return {
+        "total_flows": total,
+        "botnet_flows": botnet_count,
+        "botnet_frac": round(botnet_count / total, 6) if total else 0.0,
+        "normal_flows": int(normal_mask.sum()),
+        "normal_frac": round(float(normal_mask.mean()), 6),
+        "background_flows": int(background_mask.sum()),
+        "background_frac": round(float(background_mask.mean()), 6),
+        "unique_src_ips": int(frame["src_addr"].nunique()),
+        "unique_dst_ips": int(frame["dst_addr"].nunique()),
+        "mean_duration": round(float(frame["duration"].mean()), 4),
+        "max_duration": round(float(frame["duration"].max()), 4),
+        "botnet_host_ips": int(frame.loc[botnet_mask, "src_addr"].nunique()),
+        "unique_dst_ports": int(frame["dst_port"].nunique()),
+        "start_time": start_ts,
+        "end_time": end_ts,
+    }
+
+
+def dataset_statistics_table(loader: "CTU13Loader") -> pd.DataFrame:
+    """Load all available scenarios and compile a combined statistics DataFrame.
+
+    Parameters
+    ----------
+    loader:
+        An initialised :class:`CTU13Loader` pointing at the dataset root.
+
+    Returns
+    -------
+    pd.DataFrame with one row per scenario, sorted by ``scenario_id``.
+    Includes all keys from :func:`scenario_statistics` plus ``scenario_id``
+    and ``family`` (botnet family name from :data:`SCENARIO_FAMILY`).
+    """
+    rows = []
+    for sid in loader.available_scenarios():
+        try:
+            frame = loader.load_scenario(sid)
+            stats = scenario_statistics(frame)
+        except Exception as exc:  # pragma: no cover
+            LOGGER.warning("Skipping scenario %d: %s", sid, exc)
+            stats = {k: None for k in (
+                "total_flows", "botnet_flows", "botnet_frac",
+                "normal_flows", "normal_frac",
+                "background_flows", "background_frac",
+                "unique_src_ips", "unique_dst_ips",
+                "mean_duration", "max_duration",
+                "botnet_host_ips", "unique_dst_ports",
+                "start_time", "end_time",
+            )}
+        stats["scenario_id"] = sid
+        stats["family"] = SCENARIO_FAMILY.get(sid, "Unknown")
+        rows.append(stats)
+
+    col_order = ["scenario_id", "family"] + [
+        k for k in rows[0] if k not in ("scenario_id", "family")
+    ] if rows else []
+    df = pd.DataFrame(rows)
+    if col_order:
+        df = df[[c for c in col_order if c in df.columns]]
+    return df.sort_values("scenario_id").reset_index(drop=True)
