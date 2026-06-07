@@ -22,8 +22,13 @@ import pytest
 
 from gbd_ctu.models.baselines.random_forest_clf import RandomForestBaseline
 
-# XGBoost is optional — skip gracefully if not installed
-xgboost_available = pytest.importorskip("xgboost", reason="xgboost not installed")
+# XGBoost is optional — skip only the XGBoost test class when not installed
+try:
+    import xgboost as _xgb  # noqa: F401
+    _xgboost_available = True
+except ImportError:
+    _xgboost_available = False
+
 from gbd_ctu.models.baselines.xgboost_clf import XGBoostBaseline
 
 
@@ -128,6 +133,7 @@ class TestRandomForestBaseline:
 # XGBoostBaseline
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not _xgboost_available, reason="xgboost not installed")
 class TestXGBoostBaseline:
     def _fitted(self, feature_names=None):
         clf = XGBoostBaseline(n_estimators=10, random_state=0)
@@ -225,6 +231,71 @@ class TestXGBoostBaseline:
         params = clf.get_params()
         assert isinstance(params, dict)
         assert "n_estimators" in params
+
+
+# ---------------------------------------------------------------------------
+# train_baselines integration (mocked graph loading)
+# ---------------------------------------------------------------------------
+
+def _make_graph(n_nodes: int = 80, n_features: int = 6, seed: int = 0):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("torch_geometric")
+    from torch_geometric.data import Data
+
+    rng = np.random.default_rng(seed)
+    x = torch.from_numpy(rng.standard_normal((n_nodes, n_features)).astype(np.float32))
+    y = torch.from_numpy(rng.choice([0, 1], size=n_nodes, p=[0.8, 0.2]).astype(np.int64))
+    n_train, n_val = int(n_nodes * 0.6), int(n_nodes * 0.2)
+    train_mask = torch.zeros(n_nodes, dtype=torch.bool)
+    val_mask = torch.zeros(n_nodes, dtype=torch.bool)
+    test_mask = torch.zeros(n_nodes, dtype=torch.bool)
+    train_mask[:n_train] = True
+    val_mask[n_train:n_train + n_val] = True
+    test_mask[n_train + n_val:] = True
+    graph = Data(x=x, y=y, train_mask=train_mask, val_mask=val_mask, test_mask=test_mask)
+    graph.scenario = 1
+    return graph
+
+
+class TestTrainBaselines:
+    def test_returns_dataframe_with_fold_column(self, tmp_path):
+        graph = _make_graph()
+        with patch("gbd_ctu.training.trainer_baseline.load_graphs", return_value=[graph]):
+            from gbd_ctu.training.trainer_baseline import train_baselines
+            report = train_baselines(graph_dir=tmp_path / "graphs", output_dir=tmp_path / "out")
+        assert isinstance(report, pd.DataFrame)
+        assert "fold" in report.columns
+
+    def test_fold_values_are_zero_to_four(self, tmp_path):
+        graph = _make_graph()
+        with patch("gbd_ctu.training.trainer_baseline.load_graphs", return_value=[graph]):
+            from gbd_ctu.training.trainer_baseline import train_baselines
+            report = train_baselines(graph_dir=tmp_path / "graphs", output_dir=tmp_path / "out")
+        assert set(report["fold"].unique()).issubset({0, 1, 2, 3, 4})
+
+    def test_joblib_file_saved(self, tmp_path):
+        graph = _make_graph()
+        out = tmp_path / "out"
+        with patch("gbd_ctu.training.trainer_baseline.load_graphs", return_value=[graph]):
+            from gbd_ctu.training.trainer_baseline import train_baselines
+            train_baselines(graph_dir=tmp_path / "graphs", output_dir=out)
+        assert (out / "random_forest.joblib").exists()
+
+    def test_summary_csv_saved(self, tmp_path):
+        graph = _make_graph()
+        out = tmp_path / "out"
+        with patch("gbd_ctu.training.trainer_baseline.load_graphs", return_value=[graph]):
+            from gbd_ctu.training.trainer_baseline import train_baselines
+            train_baselines(graph_dir=tmp_path / "graphs", output_dir=out)
+        assert (out / "baseline_cv_summary.csv").exists()
+
+    def test_model_column_present(self, tmp_path):
+        graph = _make_graph()
+        with patch("gbd_ctu.training.trainer_baseline.load_graphs", return_value=[graph]):
+            from gbd_ctu.training.trainer_baseline import train_baselines
+            report = train_baselines(graph_dir=tmp_path / "graphs", output_dir=tmp_path / "out")
+        assert "model" in report.columns
+        assert "random_forest" in report["model"].values
 
 
 # ---------------------------------------------------------------------------
