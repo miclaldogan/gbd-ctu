@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+import importlib
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +31,9 @@ from gbd_ctu.evaluation.metrics import (
 )
 from gbd_ctu.evaluation.scenario_eval import evaluate_all_scenarios, evaluate_gnn_checkpoint
 from gbd_ctu.training.trainer_gnn import _make_synthetic_graph, train_gnn
+
+_pyg_available = importlib.util.find_spec("torch_geometric") is not None
+_skip_pyg = pytest.mark.skipif(not _pyg_available, reason="torch_geometric not installed")
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +195,8 @@ def _dummy_model(n_features: int = 6):
 
 
 class TestEvaluateAllScenarios:
+    pytestmark = _skip_pyg
+
     def _graphs(self, n: int = 3, n_nodes: int = 40):
         return [_make_synthetic_graph(n_nodes=n_nodes, seed=i) for i in range(n)]
 
@@ -251,6 +257,8 @@ class TestEvaluateAllScenarios:
 # ---------------------------------------------------------------------------
 
 class TestEvaluateGnnCheckpoint:
+    pytestmark = _skip_pyg
+
     def test_round_trip(self, tmp_path):
         """Train dry-run → save checkpoint → evaluate_gnn_checkpoint → CSV exists."""
         ckpt = tmp_path / "graphsage_1.pt"

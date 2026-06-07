@@ -19,6 +19,7 @@ from gbd_ctu.data.graph_builder import load_graphs
 from gbd_ctu.evaluation.metrics import classification_metrics, metrics_frame
 from gbd_ctu.models.baselines.random_forest_clf import RandomForestBaseline
 from gbd_ctu.models.baselines.xgboost_clf import XGBoostBaseline
+from gbd_ctu.training.seed import seed_everything
 
 
 def _stack_split(graphs, split: str) -> tuple[np.ndarray, np.ndarray]:
@@ -74,6 +75,7 @@ def train_baselines(
         When ``None`` all graphs in ``graph_dir`` are used.
     """
 
+    seed_everything(random_state)
     graphs = load_graphs(graph_dir)
     if scenario_ids is not None:
         graphs = [g for g in graphs if getattr(g, "scenario_id", None) in scenario_ids]

@@ -37,6 +37,7 @@ from gbd_ctu.data.graph_builder import load_graphs
 from gbd_ctu.evaluation.metrics import classification_metrics, metrics_frame
 from gbd_ctu.models.gnn import build_gnn_from_config
 from gbd_ctu.training.losses import FocalLoss
+from gbd_ctu.training.seed import seed_everything
 
 _logger = logging.getLogger(__name__)
 
@@ -207,7 +208,7 @@ def train_gnn(
         Optional list of scenario IDs to restrict training.
     """
     _require_torch()
-    torch.manual_seed(seed)
+    seed_everything(seed)
 
     if num_neighbors is None:
         num_neighbors = [10, 5]
