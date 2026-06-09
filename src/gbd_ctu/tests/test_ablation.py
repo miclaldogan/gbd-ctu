@@ -193,7 +193,7 @@ class TestRunAblationSuite:
             model_kwargs={"type": "hybrid"},
             trainer_kwargs={"epochs": 1, "loss": {"type": "focal"}},
         )
-        with patch("gbd_ctu.evaluation.ablation.load_graphs", return_value=graphs):
+        with patch("gbd_ctu.data.graph_builder.load_graphs", return_value=graphs):
             df = run_ablation_suite([cfg], graph_dir=tmp_path, output_dir=tmp_path)
         assert isinstance(df, pd.DataFrame)
 
@@ -206,7 +206,7 @@ class TestRunAblationSuite:
             AblationConfig(name="a", trainer_kwargs={"epochs": 1}),
             AblationConfig(name="b", trainer_kwargs={"epochs": 1}),
         ]
-        with patch("gbd_ctu.evaluation.ablation.load_graphs", return_value=graphs):
+        with patch("gbd_ctu.data.graph_builder.load_graphs", return_value=graphs):
             df = run_ablation_suite(cfgs, graph_dir=tmp_path, output_dir=tmp_path)
         assert len(df) == 2
 
@@ -216,7 +216,7 @@ class TestRunAblationSuite:
 
         graphs = _make_fake_graphs()
         cfg = AblationConfig(name="my_cfg", trainer_kwargs={"epochs": 1})
-        with patch("gbd_ctu.evaluation.ablation.load_graphs", return_value=graphs):
+        with patch("gbd_ctu.data.graph_builder.load_graphs", return_value=graphs):
             df = run_ablation_suite([cfg], graph_dir=tmp_path, output_dir=tmp_path)
         assert "name" in df.columns
         assert df["name"].iloc[0] == "my_cfg"
@@ -227,7 +227,7 @@ class TestRunAblationSuite:
 
         graphs = _make_fake_graphs()
         cfg = AblationConfig(name="x", trainer_kwargs={"epochs": 1})
-        with patch("gbd_ctu.evaluation.ablation.load_graphs", return_value=graphs):
+        with patch("gbd_ctu.data.graph_builder.load_graphs", return_value=graphs):
             df = run_ablation_suite([cfg], graph_dir=tmp_path, output_dir=tmp_path)
         for col in ("mean_auc", "std_auc", "mean_f1"):
             assert col in df.columns, f"Missing column: {col}"
@@ -238,7 +238,7 @@ class TestRunAblationSuite:
 
         graphs = _make_fake_graphs()
         cfg = AblationConfig(name="y", trainer_kwargs={"epochs": 1})
-        with patch("gbd_ctu.evaluation.ablation.load_graphs", return_value=graphs):
+        with patch("gbd_ctu.data.graph_builder.load_graphs", return_value=graphs):
             run_ablation_suite([cfg], graph_dir=tmp_path, output_dir=tmp_path)
         assert (tmp_path / "ablation_results.csv").exists()
         assert (tmp_path / "ablation_results.json").exists()

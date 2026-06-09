@@ -55,7 +55,6 @@ NODE_FEATURE_COLUMNS: list[str] = [
     "total_bytes_sent",
     "total_bytes_recv",
     "unique_dst_count",
-    "botnet_flow_ratio",
 ]
 
 

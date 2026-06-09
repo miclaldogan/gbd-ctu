@@ -110,6 +110,7 @@ def evaluate_all_scenarios(
             n_total = int(mask_np.sum())
 
             records.append({
+                "model": model_name,
                 "scenario_id": scenario_id,
                 "scenario": getattr(graph, "scenario", f"scenario-{scenario_id:02d}"),
                 "auc": metrics["auc"],
@@ -119,6 +120,7 @@ def evaluate_all_scenarios(
                 "fpr": metrics["fpr"],
                 "n_botnet_nodes": n_botnet,
                 "n_total_nodes": n_total,
+                "split": split,
             })
 
     frame = pd.DataFrame.from_records(records)

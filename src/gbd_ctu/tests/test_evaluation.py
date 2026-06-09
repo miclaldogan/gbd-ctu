@@ -187,7 +187,7 @@ class TestConfusionMatrixPlot:
 # evaluate_all_scenarios
 # ---------------------------------------------------------------------------
 
-def _dummy_model(n_features: int = 6):
+def _dummy_model(n_features: int = 22):
     """Return an untrained GraphSAGE model for testing."""
     from gbd_ctu.models.gnn.graphsage import GraphSAGENodeClassifier
     return GraphSAGENodeClassifier(in_channels=n_features, hidden_channels=16,
@@ -266,15 +266,13 @@ class TestEvaluateGnnCheckpoint:
 
         # Patch checkpoint with synthetic graphs compatible with test
         state = torch.load(ckpt, weights_only=False)
-        # Replace stored model_kwargs in_channels if needed (synthetic graph has 6 features)
-        state["model_kwargs"]["in_channels"] = 6
+        # Align graph_dir with the checkpoint's actual in_channels
+        in_channels = state["model_kwargs"]["in_channels"]
         torch.save(state, ckpt)
 
-        # We need a graph_dir — use a synthetic approach:
-        # Save a synthetic graph as the "graph dir"
         graph_dir = tmp_path / "graphs"
         graph_dir.mkdir()
-        g = _make_synthetic_graph(n_features=6, seed=42)
+        g = _make_synthetic_graph(n_features=in_channels, seed=42)
         torch.save(g, graph_dir / "scenario_synthetic.pt")
 
         output_csv = tmp_path / "reports" / "results.csv"

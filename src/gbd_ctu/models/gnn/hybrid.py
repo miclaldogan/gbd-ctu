@@ -132,7 +132,12 @@ class GraphSageGATHybridClassifier(nn.Module):
         self.sage_branch = _SageBranch(in_channels, sage_hidden, embed_channels, dropout)
         self.gat_branch = _GATBranch(in_channels, gat_hidden, embed_channels, gat_heads, dropout)
         self.dropout_prob = dropout
-        self.classifier = nn.Linear(2 * embed_channels, out_channels)
+        # Skip connection projects raw features to embed_channels so the
+        # classifier always has access to un-aggregated node features.
+        # This prevents message-passing noise from hub IPs from drowning the
+        # discriminative raw-feature signal.
+        self.skip = nn.Linear(in_channels, embed_channels)
+        self.classifier = nn.Linear(3 * embed_channels, out_channels)
 
         self.num_parameters: int = sum(p.numel() for p in self.parameters())
         _logger.info(
@@ -161,11 +166,12 @@ class GraphSageGATHybridClassifier(nn.Module):
             ``return_attention=True``.
         """
         x, edge_index = data.x, data.edge_index
+        skip = functional.relu(self.skip(x))
         sage_embed = self.sage_branch(x, edge_index)
         if return_attention:
             gat_embed, attn = self.gat_branch(x, edge_index, return_attention=True)
-            logits = self.classifier(torch.cat([sage_embed, gat_embed], dim=-1))
+            logits = self.classifier(torch.cat([sage_embed, gat_embed, skip], dim=-1))
             return logits, attn
         gat_embed = self.gat_branch(x, edge_index)
-        return self.classifier(torch.cat([sage_embed, gat_embed], dim=-1))
+        return self.classifier(torch.cat([sage_embed, gat_embed, skip], dim=-1))
 

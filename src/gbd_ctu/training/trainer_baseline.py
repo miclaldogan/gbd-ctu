@@ -59,7 +59,14 @@ def _evaluate_by_scenario(graphs, estimator, model_name: str) -> list[dict[str, 
         labels = graph.y.cpu().numpy()[mask]
         probabilities = estimator.predict_proba(features)[:, 1]
         metrics = classification_metrics(labels, probabilities)
-        metrics.update({"model": model_name, "scenario": graph.scenario, "split": "test"})
+        metrics.update({
+            "model": model_name,
+            "scenario": getattr(graph, "scenario", f"scenario-{getattr(graph, 'scenario_id', 0)}"),
+            "scenario_id": int(getattr(graph, "scenario_id", 0)),
+            "split": "test",
+            "n_botnet_nodes": int((labels == 1).sum()),
+            "n_total_nodes": int(len(labels)),
+        })
         records.append(metrics)
     return records
 
@@ -144,6 +151,17 @@ def train_baselines(
             fold_records.append(metrics)
 
         joblib.dump(estimator, destination / f"{model_name}.joblib")
+
+    scenario_records: list[dict[str, Any]] = []
+    for model_name, estimator in models:
+        scenario_records.extend(_evaluate_by_scenario(graphs, estimator, model_name))
+
+    if scenario_records:
+        scenario_report = pd.DataFrame(scenario_records)
+        scenario_report.to_csv(destination / "baseline_metrics.csv", index=False)
+        for model_name in scenario_report["model"].unique():
+            sub = scenario_report[scenario_report["model"] == model_name]
+            sub.to_csv(destination / f"results_{model_name}.csv", index=False)
 
     report = pd.DataFrame(fold_records)
     report.to_csv(destination / "baseline_cv_metrics.csv", index=False)
@@ -284,7 +302,7 @@ def train_mlp(
     # ---- data ---------------------------------------------------------------
     if dry_run:
         from gbd_ctu.training.trainer_gnn import _make_synthetic_graph
-        graphs = [_make_synthetic_graph(n_nodes=80, n_features=6, seed=seed)]
+        graphs = [_make_synthetic_graph(n_nodes=80, n_features=22, seed=seed)]
         epochs = 3
         _logger.info("dry-run mode: using synthetic graph for %d epochs", epochs)
     else:

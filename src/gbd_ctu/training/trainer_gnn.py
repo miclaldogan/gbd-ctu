@@ -63,7 +63,7 @@ def _build_model(family: str, in_channels: int, hidden_channels: int,
     return build_gnn_from_config(in_channels=in_channels, config=config)
 
 
-def _make_synthetic_graph(n_nodes: int = 50, n_features: int = 6, seed: int = 0):
+def _make_synthetic_graph(n_nodes: int = 50, n_features: int = 22, seed: int = 0):
     """Build a tiny synthetic PyG graph for dry-run / unit tests."""
     _require_torch()
     rng = np.random.default_rng(seed)
@@ -85,12 +85,14 @@ def _make_synthetic_graph(n_nodes: int = 50, n_features: int = 6, seed: int = 0)
                 scenario="synthetic-00", scenario_id=0)
 
 
-def _evaluate_split(model, graphs, split: str) -> list[dict[str, Any]]:
+def _evaluate_split(model, graphs, split: str, device: "torch.device | None" = None) -> list[dict[str, Any]]:
     """Run full-graph inference and return per-scenario metric dicts."""
     model.eval()
     records: list[dict[str, Any]] = []
     with torch.no_grad():
         for graph in graphs:
+            if device is not None:
+                graph = graph.to(device)
             logits = model(graph)
             probabilities = torch.softmax(logits, dim=-1)[:, 1].cpu().numpy()
             labels = graph.y.cpu().numpy()
@@ -104,56 +106,28 @@ def _evaluate_split(model, graphs, split: str) -> list[dict[str, Any]]:
 
 
 def _train_one_epoch(model, graphs, criterion, optimizer, batch_size: int,
-                     num_neighbors: list[int]) -> float:
-    """Run one training epoch using NeighborLoader mini-batches.
+                     num_neighbors: list[int], device: "torch.device | None" = None) -> float:
+    """Run one training epoch with full-graph forward passes per scenario.
 
-    Falls back transparently to full-graph mini-batching when ``pyg-lib`` /
-    ``torch-sparse`` are not installed (``NeighborLoader`` raises
-    ``ImportError`` on first iteration in that case).
+    Graphs are moved to device one at a time to avoid GPU OOM when holding
+    all 13 CTU-13 graphs (100 K nodes each) simultaneously on the GPU.
     """
     model.train()
     running_loss = 0.0
     n_batches = 0
     for graph in graphs:
+        if device is not None:
+            graph = graph.to(device)
         train_mask = graph.train_mask
         if not train_mask.any():
             continue
-        loader = NeighborLoader(
-            graph,
-            num_neighbors=num_neighbors,
-            batch_size=batch_size,
-            input_nodes=train_mask,
-            shuffle=True,
-        )
-        try:
-            for batch in loader:
-                optimizer.zero_grad()
-                logits = model(batch)
-                # Seed nodes are the first batch.batch_size entries
-                seed_logits = logits[:batch.batch_size]
-                seed_labels = batch.y[:batch.batch_size]
-                loss = criterion(seed_logits, seed_labels)
-                loss.backward()
-                optimizer.step()
-                running_loss += float(loss.item())
-                n_batches += 1
-        except ImportError:
-            # pyg-lib / torch-sparse not available; fall back to full-graph
-            # node-batched training on the complete graph.
-            _logger.warning(
-                "NeighborLoader requires 'pyg-lib' or 'torch-sparse'; "
-                "falling back to full-graph mini-batch training."
-            )
-            train_indices = train_mask.nonzero(as_tuple=True)[0]
-            for i in range(0, max(len(train_indices), 1), batch_size):
-                bi = train_indices[i : i + batch_size]
-                optimizer.zero_grad()
-                logits = model(graph)
-                loss = criterion(logits[bi], graph.y[bi])
-                loss.backward()
-                optimizer.step()
-                running_loss += float(loss.item())
-                n_batches += 1
+        optimizer.zero_grad()
+        logits = model(graph)
+        loss = criterion(logits[train_mask], graph.y[train_mask])
+        loss.backward()
+        optimizer.step()
+        running_loss += float(loss.item())
+        n_batches += 1
     return running_loss / max(n_batches, 1)
 
 
@@ -215,7 +189,7 @@ def train_gnn(
 
     # ---- data ---------------------------------------------------------------
     if dry_run:
-        graphs = [_make_synthetic_graph(n_features=6, seed=seed)]
+        graphs = [_make_synthetic_graph(n_features=22, seed=seed)]
         epochs = 3
         _logger.info("dry-run mode: using synthetic graph for %d epochs", epochs)
     else:
@@ -227,9 +201,13 @@ def train_gnn(
             if not graphs:
                 raise ValueError(f"No graphs found for scenario_ids={scenario_ids}.")
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    _logger.info("training device: %s", device)
+    # Graphs stay on CPU; each is moved to device only during its forward pass.
+
     in_channels = int(graphs[0].num_node_features)
     model = _build_model(family, in_channels, hidden_channels, out_channels,
-                         heads, num_layers, dropout)
+                         heads, num_layers, dropout).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", patience=lr_scheduler_patience,
@@ -259,9 +237,10 @@ def train_gnn(
 
     for epoch in range(1, epochs + 1):
         train_loss = _train_one_epoch(model, graphs, criterion, optimizer,
-                                      batch_size=batch_size, num_neighbors=num_neighbors)
+                                      batch_size=batch_size, num_neighbors=num_neighbors,
+                                      device=device)
 
-        val_records = _evaluate_split(model, graphs, split="val")
+        val_records = _evaluate_split(model, graphs, split="val", device=device)
         val_auc = float(np.nanmean([r["auc"] for r in val_records])) if val_records else float("nan")
         val_f1 = float(np.nanmean([r["f1"] for r in val_records])) if val_records else float("nan")
 
@@ -270,10 +249,11 @@ def train_gnn(
         model.eval()
         with torch.no_grad():
             for graph in graphs:
-                if not graph.val_mask.any():
+                g = graph.to(device)
+                if not g.val_mask.any():
                     continue
-                logits = model(graph)
-                vl = float(criterion(logits[graph.val_mask], graph.y[graph.val_mask]).item())
+                logits = model(g)
+                vl = float(criterion(logits[g.val_mask], g.y[g.val_mask]).item())
                 val_loss_vals.append(vl)
         val_loss = float(np.nanmean(val_loss_vals)) if val_loss_vals else float("nan")
 
@@ -366,7 +346,7 @@ def train_gnn(
         scenario_ckpt = checkpoint.parent / f"{family}_scenario{sid}.pt"
         torch.save(best_state, scenario_ckpt)
 
-    report = metrics_frame(_evaluate_split(model, graphs, split="val"))
+    report = metrics_frame(_evaluate_split(model, graphs, split="val", device=device))
     if run is not None:
         run.finish()
 
