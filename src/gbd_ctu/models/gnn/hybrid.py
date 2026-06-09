@@ -2,18 +2,29 @@
 
 Architecture — parallel branches sharing the same input graph:
 
-    SAGE branch:  SAGEConv(in → sage_hidden=128) → BN(128) → ReLU → Dropout
-                  SAGEConv(128 → embed_channels=32) → BN(32) → ReLU
+    SAGE branch:  3 layers, each with parallel mean+max SAGEConv aggregation.
+                  Residual connections at every layer prevent over-smoothing
+                  and preserve discriminative raw-feature signal.
+
+                  Layer 1: [SAGEConv_mean(in → h/2) ‖ SAGEConv_max(in → h/2)]
+                           = hidden → BN → ReLU + Linear(in → hidden) [residual]
+                  Layer 2: [SAGEConv_mean(h → h/2) ‖ SAGEConv_max(h → h/2)]
+                           = hidden → BN → ReLU + identity [residual]
+                  Layer 3: [SAGEConv_mean(h → e/2) ‖ SAGEConv_max(h → e/2)]
+                           = embed → BN → ReLU + Linear(h → embed) [residual]
 
     GAT  branch:  GATConv(in → gat_hidden=64, heads=4, concat=True) → ELU → Dropout
-                                                                     # out: 256
-                  GATConv(256 → embed_channels=32, heads=1, concat=False) → ELU
+                  + Linear(in → hidden*heads) [residual]
+                  GATConv(hidden*heads → embed_channels=32, heads=1) → ELU
 
-    Fusion:       concat([sage_32, gat_32]) = 64 → Linear(64 → out_channels)
+    Skip:         Linear(in → embed) — raw features always reach the classifier.
 
-With default embed_channels=32 the concatenated representation is 64-dim.
-Both branches receive the same data.x and data.edge_index; gradients flow
-through both.
+    Fusion:       concat([sage_embed, gat_embed, skip]) = 3*embed → Linear → out
+
+The mean aggregator captures average neighborhood behavior; max preserves
+extreme botnet values (high byte counts, unusual ports) that mean dilutes.
+3-hop neighborhoods allow the GNN to reach C&C peers of a bot's direct
+connections, revealing the botnet cluster structure.
 """
 
 from __future__ import annotations
@@ -36,32 +47,58 @@ except ImportError:  # pragma: no cover - optional during static inspection
 
 
 class _SageBranch(nn.Module):
-    """Two-layer GraphSAGE sub-network used inside the hybrid classifier.
+    """Three-layer GraphSAGE with parallel mean+max aggregation and residuals.
 
-    Architecture: SAGEConv(in → hidden) → BN → ReLU → Dropout
-                  SAGEConv(hidden → embed) → BN → ReLU
+    Each layer runs two SAGEConv ops (mean and max) in parallel and
+    concatenates their outputs.  Mean captures average neighborhood behavior;
+    max preserves extreme botnet values (high bytes, unusual ports) that mean
+    dilutes.  Residual connections at every layer prevent over-smoothing so the
+    3rd hop doesn't wash out the discriminative raw-feature signal.
     """
 
     def __init__(self, in_channels: int, hidden: int, embed: int, dropout: float) -> None:
         super().__init__()
-        # max aggregation preserves the most extreme neighbor feature values,
-        # preventing hub-IP mean aggregation from diluting botnet signal.
-        self.conv1 = SAGEConv(in_channels, hidden, aggr="max")
-        self.bn1 = nn.BatchNorm1d(hidden)
-        self.conv2 = SAGEConv(hidden, embed, aggr="max")
-        self.bn2 = nn.BatchNorm1d(embed)
+        half_h = hidden // 2
+        half_e = embed // 2
+        # Layer 1: in → hidden (mean + max, each produces half_h / rest)
+        self.conv1_mean = SAGEConv(in_channels, half_h, aggr="mean")
+        self.conv1_max  = SAGEConv(in_channels, hidden - half_h, aggr="max")
+        self.bn1  = nn.BatchNorm1d(hidden)
+        self.res1 = nn.Linear(in_channels, hidden, bias=False)
+        # Layer 2: hidden → hidden (identity residual — same dim)
+        self.conv2_mean = SAGEConv(hidden, half_h, aggr="mean")
+        self.conv2_max  = SAGEConv(hidden, hidden - half_h, aggr="max")
+        self.bn2  = nn.BatchNorm1d(hidden)
+        # Layer 3: hidden → embed
+        self.conv3_mean = SAGEConv(hidden, half_e, aggr="mean")
+        self.conv3_max  = SAGEConv(hidden, embed - half_e, aggr="max")
+        self.bn3  = nn.BatchNorm1d(embed)
+        self.res3 = nn.Linear(hidden, embed, bias=False)
         self.dropout_prob = dropout
 
     def forward(self, x, edge_index):  # type: ignore[override]
-        x = functional.relu(self.bn1(self.conv1(x, edge_index)))
-        x = functional.dropout(x, p=self.dropout_prob, training=self.training)
-        return functional.relu(self.bn2(self.conv2(x, edge_index)))
+        # Layer 1 — BN applied to (conv_out + residual) to prevent un-normalised
+        # skip path from dominating the sum and causing activation explosion.
+        h = torch.cat([self.conv1_mean(x, edge_index),
+                       self.conv1_max(x, edge_index)], dim=-1)
+        h = functional.relu(self.bn1(h + self.res1(x)))
+        h = functional.dropout(h, p=self.dropout_prob, training=self.training)
+        # Layer 2 — identity residual (same dim), BN on sum
+        h2 = torch.cat([self.conv2_mean(h, edge_index),
+                        self.conv2_max(h, edge_index)], dim=-1)
+        h2 = functional.relu(self.bn2(h2 + h))
+        h2 = functional.dropout(h2, p=self.dropout_prob, training=self.training)
+        # Layer 3 — project residual then BN on sum
+        out = torch.cat([self.conv3_mean(h2, edge_index),
+                         self.conv3_max(h2, edge_index)], dim=-1)
+        return functional.relu(self.bn3(out + self.res3(h2)))
 
 
 class _GATBranch(nn.Module):
-    """Two-layer GAT sub-network used inside the hybrid classifier.
+    """Two-layer GAT sub-network with residual connection on the first layer.
 
     Architecture: GATConv(in → hidden, heads=heads, concat=True) → ELU → Dropout
+                  + Linear(in → hidden*heads) [residual]
                   GATConv(hidden*heads → embed, heads=1, concat=False) → ELU
     """
 
@@ -71,20 +108,21 @@ class _GATBranch(nn.Module):
         super().__init__()
         self.conv1 = GATConv(in_channels, hidden, heads=heads, concat=True, dropout=dropout)
         self.conv2 = GATConv(hidden * heads, embed, heads=1, concat=False, dropout=dropout)
+        self.res1  = nn.Linear(in_channels, hidden * heads, bias=False)
         self.dropout_prob = dropout
 
     def forward(self, x, edge_index, return_attention: bool = False):  # type: ignore[override]
         if return_attention:
             E = edge_index.shape[1]
             out1, (_, alpha1) = self.conv1(x, edge_index, return_attention_weights=True)
-            out1 = functional.elu(out1)
+            out1 = functional.elu(out1 + self.res1(x))
             out1 = functional.dropout(out1, p=self.dropout_prob, training=self.training)
             out2, (_, alpha2) = self.conv2(out1, edge_index, return_attention_weights=True)
             out2 = functional.elu(out2)
             return out2, {"layer_0": alpha1[:E], "layer_1": alpha2[:E]}
-        x = functional.elu(self.conv1(x, edge_index))
-        x = functional.dropout(x, p=self.dropout_prob, training=self.training)
-        return functional.elu(self.conv2(x, edge_index))
+        h = functional.elu(self.conv1(x, edge_index) + self.res1(x))
+        h = functional.dropout(h, p=self.dropout_prob, training=self.training)
+        return functional.elu(self.conv2(h, edge_index))
 
 
 class GraphSageGATHybridClassifier(nn.Module):
@@ -118,7 +156,7 @@ class GraphSageGATHybridClassifier(nn.Module):
         in_channels: int,
         embed_channels: int = 32,
         out_channels: int = 2,
-        sage_hidden: int = 128,
+        sage_hidden: int = 64,
         gat_hidden: int = 64,
         gat_heads: int = 4,
         dropout: float = 0.3,
@@ -131,13 +169,17 @@ class GraphSageGATHybridClassifier(nn.Module):
         if hidden_channels is not None:
             embed_channels = hidden_channels  # honour legacy kwarg
 
+        # sage_hidden is halved from 128→64: the 3-layer × 2-aggregator (mean+max)
+        # SAGE branch has 6 forward passes per graph and 100K nodes exhaust GPU VRAM
+        # at sage_hidden=128. With sage_hidden=64 each parallel conv produces 32-dim
+        # embeddings (total=64=same as before) while adding depth and mean aggregation.
+        # Input BN normalises raw node features before any branch sees them.
+        # RobustScaler preserves outliers (good for tree models) but they
+        # produce loss spikes through the skip linear at init; input BN fixes this.
+        self.input_bn = nn.BatchNorm1d(in_channels)
         self.sage_branch = _SageBranch(in_channels, sage_hidden, embed_channels, dropout)
         self.gat_branch = _GATBranch(in_channels, gat_hidden, embed_channels, gat_heads, dropout)
         self.dropout_prob = dropout
-        # Skip connection projects raw features to embed_channels so the
-        # classifier always has access to un-aggregated node features.
-        # This prevents message-passing noise from hub IPs from drowning the
-        # discriminative raw-feature signal.
         self.skip = nn.Linear(in_channels, embed_channels)
         self.classifier = nn.Linear(3 * embed_channels, out_channels)
 
@@ -167,7 +209,8 @@ class GraphSageGATHybridClassifier(nn.Module):
             ``(logits, {"layer_0": alpha_0, "layer_1": alpha_1})`` when
             ``return_attention=True``.
         """
-        x, edge_index = data.x, data.edge_index
+        x_raw, edge_index = data.x, data.edge_index
+        x = self.input_bn(x_raw)
         skip = functional.relu(self.skip(x))
         sage_embed = self.sage_branch(x, edge_index)
         if return_attention:
@@ -182,8 +225,9 @@ class GraphSageGATHybridClassifier(nn.Module):
 
         Used by the GNN+XGBoost ensemble to build an enriched feature matrix.
         """
-        x, edge_index = data.x, data.edge_index
+        x_raw, edge_index = data.x, data.edge_index
         with torch.no_grad():
+            x = self.input_bn(x_raw)
             skip = functional.relu(self.skip(x))
             sage_embed = self.sage_branch(x, edge_index)
             gat_embed = self.gat_branch(x, edge_index)

@@ -214,7 +214,7 @@ class TestFeatureMeans:
         from gbd_ctu.data.feature_extractor import FlowFeatureExtractor
         ffe = FlowFeatureExtractor()
         ffe.fit(_make_ctu_like_frame())
-        assert ffe.feature_means_.shape == (22,)
+        assert ffe.feature_means_.shape == (35,)
 
     def test_feature_means_set_after_fit_transform(self):
         from gbd_ctu.data.feature_extractor import FlowFeatureExtractor
@@ -247,7 +247,7 @@ class TestTransformExternal:
         csv = _make_unsw_csv(tmp_path, n=30)
         df = UNSWN15Loader().load(csv)
         out = ffe.transform_external(df)
-        assert out.shape == (len(df), 22)
+        assert out.shape == (len(df), 35)
 
     def test_returns_float32(self, tmp_path):
         from gbd_ctu.data.unsw_nb15_loader import UNSWN15Loader
@@ -287,7 +287,7 @@ class TestTransformExternal:
         csv = _make_unsw_csv(tmp_path, n=20)
         df = UNSWN15Loader().load(csv)
         out = ffe.transform_external(df, missing_features=[])
-        assert out.shape == (len(df), 22)
+        assert out.shape == (len(df), 35)
 
     def test_unknown_feature_name_skipped(self, tmp_path):
         from gbd_ctu.data.unsw_nb15_loader import UNSWN15Loader
@@ -296,7 +296,7 @@ class TestTransformExternal:
         df = UNSWN15Loader().load(csv)
         # Should not crash for a name not in FLOW_FEATURE_COLUMNS
         out = ffe.transform_external(df, missing_features=["nonexistent_col"])
-        assert out.shape == (len(df), 22)
+        assert out.shape == (len(df), 35)
 
     def test_no_nans_in_output(self, tmp_path):
         from gbd_ctu.data.unsw_nb15_loader import UNSWN15Loader

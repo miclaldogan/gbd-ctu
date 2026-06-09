@@ -37,7 +37,7 @@ from gbd_ctu.models.baselines.xgboost_clf import XGBoostBaseline
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_data(n_samples: int = 100, n_features: int = 30, seed: int = 0):
+def _make_data(n_samples: int = 100, n_features: int = 35, seed: int = 0):
     """Return a small imbalanced synthetic (X, y) pair."""
     rng = np.random.default_rng(seed)
     x = rng.standard_normal((n_samples, n_features)).astype(np.float32)
@@ -46,7 +46,7 @@ def _make_data(n_samples: int = 100, n_features: int = 30, seed: int = 0):
     return x, y
 
 
-FEATURE_NAMES = [f"feat_{i}" for i in range(22)]
+FEATURE_NAMES = [f"feat_{i}" for i in range(35)]
 
 
 # ---------------------------------------------------------------------------

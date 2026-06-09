@@ -1,7 +1,7 @@
 """GBD-CTU feature extractor tests.
 
 These tests validate that the CTU-13 flow feature extractor emits the expected
-30-dimensional scaled matrix and can apply a fitted scaler across splits.
+35-dimensional scaled matrix and can apply a fitted scaler across splits.
 """
 
 from __future__ import annotations
@@ -66,8 +66,8 @@ def _test_frame() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def test_flow_feature_columns_has_22_entries() -> None:
-    """FLOW_FEATURE_COLUMNS must contain exactly 30 feature names (regression guard)."""
-    assert len(FLOW_FEATURE_COLUMNS) == 30
+    """FLOW_FEATURE_COLUMNS must contain exactly 35 feature names (regression guard)."""
+    assert len(FLOW_FEATURE_COLUMNS) == 35
 
 
 def test_flow_feature_columns_no_duplicates() -> None:
@@ -85,8 +85,8 @@ def test_flow_feature_extractor_outputs_27_features() -> None:
     train_features = extractor.fit_transform(_train_frame())
     test_features = extractor.transform(_test_frame())
 
-    assert train_features.shape == (2, 30)
-    assert test_features.shape == (1, 30)
+    assert train_features.shape == (2, 35)
+    assert test_features.shape == (1, 35)
     assert np.isfinite(train_features).all()
     assert np.isfinite(test_features).all()
 
@@ -99,7 +99,7 @@ def test_feature_names_property_returns_22_strings() -> None:
     """extractor.feature_names must be the list of 27 feature name strings."""
     extractor = FlowFeatureExtractor()
     assert extractor.feature_names == FLOW_FEATURE_COLUMNS
-    assert len(extractor.feature_names) == 30
+    assert len(extractor.feature_names) == 35
     assert all(isinstance(name, str) for name in extractor.feature_names)
 
 
@@ -114,21 +114,21 @@ def test_feature_names_property_matches_output_columns() -> None:
 
 
 # ---------------------------------------------------------------------------
-# StandardScaler: fit only on train, not refitted on transform
+# RobustScaler: fit only on train, not refitted on transform
 # ---------------------------------------------------------------------------
 
 def test_scaler_fit_only_on_train() -> None:
-    """StandardScaler parameters must not change when transform() is called."""
+    """RobustScaler parameters must not change when transform() is called."""
     extractor = FlowFeatureExtractor()
     extractor.fit(_train_frame())
-    mean_before = extractor.scaler.mean_.copy()
-    std_before = extractor.scaler.scale_.copy()
+    center_before = extractor.scaler.center_.copy()
+    scale_before = extractor.scaler.scale_.copy()
 
     # transform on a completely different frame must not refit
     extractor.transform(_test_frame())
 
-    np.testing.assert_array_equal(extractor.scaler.mean_, mean_before)
-    np.testing.assert_array_equal(extractor.scaler.scale_, std_before)
+    np.testing.assert_array_equal(extractor.scaler.center_, center_before)
+    np.testing.assert_array_equal(extractor.scaler.scale_, scale_before)
 
 
 def test_transform_raises_before_fit() -> None:
@@ -157,9 +157,9 @@ def test_transform_splits_returns_correct_keys_and_shapes() -> None:
     result = extractor.transform_splits(_train_frame(), val_frame, _test_frame())
 
     assert set(result.keys()) == {"train", "val", "test"}
-    assert result["train"].shape == (2, 30)
-    assert result["val"].shape == (1, 30)
-    assert result["test"].shape == (1, 30)
+    assert result["train"].shape == (2, 35)
+    assert result["val"].shape == (1, 35)
+    assert result["test"].shape == (1, 35)
 
 
 def test_transform_splits_without_optional_frames() -> None:
@@ -167,7 +167,7 @@ def test_transform_splits_without_optional_frames() -> None:
     extractor = FlowFeatureExtractor()
     result = extractor.transform_splits(_train_frame())
     assert list(result.keys()) == ["train"]
-    assert result["train"].shape == (2, 30)
+    assert result["train"].shape == (2, 35)
 
 
 # ---------------------------------------------------------------------------

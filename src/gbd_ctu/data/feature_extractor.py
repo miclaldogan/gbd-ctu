@@ -1,9 +1,9 @@
 """GBD-CTU NetFlow feature extraction.
 
-This module extracts a fixed 30-dimensional feature vector from CTU-13 NetFlow
-records and applies StandardScaler normalization. Inputs are raw or normalized
+This module extracts a fixed 35-dimensional feature vector from CTU-13 NetFlow
+records and applies RobustScaler normalization. Inputs are raw or normalized
 flow DataFrames; outputs are normalized DataFrames and numpy arrays shaped
-`(n_flows, 30)` suitable for graph edge features and classical baselines.
+`(n_flows, 35)` suitable for graph edge features and classical baselines.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler
 
 try:
     import torch
@@ -61,6 +61,15 @@ FLOW_FEATURE_COLUMNS: list[str] = [
     "hour_of_day",        # 0-23 normalised to [0,1]
     "is_nighttime",       # 1 if 23:00-06:00 (common botnet hours)
     "src_to_dst_ratio",   # src_bytes / total_bytes — flow direction asymmetry
+    # --- IP-level behavioral features (5) ---
+    # Group-by statistics per source IP across all flows in the scenario.
+    # These encode scanning, beaconing, and activity-level signals that are
+    # invisible from individual flow features alone.
+    "src_ip_fan_out",          # log1p(unique dst IPs) — horizontal scanning
+    "src_ip_flow_count",       # log1p(total flows from src IP) — activity level
+    "src_ip_iat_mean",         # log1p(mean inter-arrival time, s) — periodicity
+    "src_ip_iat_std",          # log1p(std of IAT) — low std = beaconing pattern
+    "src_ip_dst_port_nunique", # log1p(unique dst ports) — port scanning
 ]
 
 EDGE_FEATURE_COLUMNS: list[str] = FLOW_FEATURE_COLUMNS.copy()
@@ -188,14 +197,56 @@ def standardize_flow_frame(frame: pd.DataFrame, scenario: str | None = None) -> 
         safe_divide(s, b) for s, b in zip(normalized["src_bytes"], normalized["total_bytes"])
     ]
 
+    # IP-level behavioral features — computed from cross-flow group stats.
+    # Each flow is annotated with aggregated stats about its source IP's
+    # behavior across the full scenario, capturing botnet signatures like
+    # scanning (high fan-out), beaconing (low IAT std), and port sweeping.
+    _grp = normalized.groupby("src_addr", sort=False)
+    normalized["src_ip_fan_out"] = np.log1p(
+        _grp["dst_addr"].transform("nunique").astype(float)
+    )
+    normalized["src_ip_flow_count"] = np.log1p(
+        _grp["src_addr"].transform("count").astype(float)
+    )
+    normalized["src_ip_dst_port_nunique"] = np.log1p(
+        normalized["src_addr"].map(
+            _grp["dst_port"].nunique()
+        ).fillna(0).astype(float)
+    )
+    # Inter-arrival time stats require sorting within each src group
+    _iat_tmp = (
+        normalized[["src_addr", "start_time"]]
+        .copy()
+        .sort_values(["src_addr", "start_time"])
+    )
+    _iat_tmp["_iat"] = (
+        _iat_tmp.groupby("src_addr")["start_time"]
+        .diff()
+        .dt.total_seconds()
+        .fillna(0)
+        .clip(lower=0)
+    )
+    _iat_stats = _iat_tmp.groupby("src_addr")["_iat"].agg(["mean", "std"]).fillna(0)
+    normalized["src_ip_iat_mean"] = np.log1p(
+        normalized["src_addr"].map(_iat_stats["mean"]).fillna(0).astype(float)
+    )
+    normalized["src_ip_iat_std"] = np.log1p(
+        normalized["src_addr"].map(_iat_stats["std"]).fillna(0).astype(float)
+    )
+
     return normalized.sort_values("start_time").reset_index(drop=True)
 
 
 class FlowFeatureExtractor:
-    """Extract and StandardScale the 22 CTU-13 flow features.
+    """Extract and RobustScale the 35 CTU-13 flow features.
+
+    RobustScaler (median + IQR) is used instead of StandardScaler because
+    network traffic is heavily right-skewed — a single DDoS or exfiltration
+    flow can be orders of magnitude larger than normal, pulling StandardScaler's
+    mean and compressing the normal-traffic range.
 
     After :meth:`fit` the extractor stores :attr:`feature_means_` — the
-    per-feature means of the *raw* (unscaled) training features.  These are
+    per-feature medians of the *raw* (unscaled) training features.  These are
     used by :meth:`transform_external` to fill feature columns that cannot be
     derived from an external dataset's schema (e.g. ``tos_src`` / ``tos_dst``
     for UNSW-NB15 which lacks ``src_tos`` / ``dst_tos`` source columns).
@@ -203,10 +254,10 @@ class FlowFeatureExtractor:
 
     def __init__(self) -> None:
         self.feature_names = FLOW_FEATURE_COLUMNS.copy()
-        self.scaler = StandardScaler()
+        self.scaler = RobustScaler()
         self.is_fitted = False
-        #: Per-feature means of the raw (unscaled) training features.
-        #: Shape ``(30,)``.  Set by :meth:`fit` and :meth:`fit_transform`.
+        #: Per-feature medians of the raw (unscaled) training features.
+        #: Shape ``(35,)``.  Set by :meth:`fit` and :meth:`fit_transform`.
         self.feature_means_: np.ndarray | None = None
 
     def prepare_frame(self, frame: pd.DataFrame, scenario: str | None = None) -> pd.DataFrame:
@@ -229,7 +280,7 @@ class FlowFeatureExtractor:
         """
         raw_matrix = self.raw_transform(frame, scenario=scenario)
         self.scaler.fit(raw_matrix)
-        self.feature_means_ = raw_matrix.mean(axis=0).astype(np.float32)
+        self.feature_means_ = np.median(raw_matrix, axis=0).astype(np.float32)
         self.is_fitted = True
         return self
 
@@ -246,7 +297,7 @@ class FlowFeatureExtractor:
 
         raw_matrix = self.raw_transform(frame, scenario=scenario)
         normalized = self.scaler.fit_transform(raw_matrix).astype(np.float32)
-        self.feature_means_ = raw_matrix.mean(axis=0).astype(np.float32)
+        self.feature_means_ = np.median(raw_matrix, axis=0).astype(np.float32)
         self.is_fitted = True
         return normalized
 

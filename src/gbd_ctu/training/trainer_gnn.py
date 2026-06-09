@@ -123,7 +123,7 @@ def _find_optimal_threshold(model, graph, device) -> float:
     return float(best_t)
 
 
-def _make_synthetic_graph(n_nodes: int = 50, n_features: int = 30, seed: int = 0):
+def _make_synthetic_graph(n_nodes: int = 50, n_features: int = 35, seed: int = 0):
     """Build a tiny synthetic PyG graph for dry-run / unit tests."""
     _require_torch()
     rng = np.random.default_rng(seed)
@@ -202,6 +202,8 @@ def _train_one_epoch(model, graphs, criterion, optimizer, batch_size: int,
         optimizer.step()
         running_loss += float(loss.item())
         n_batches += 1
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     return running_loss / max(n_batches, 1)
 
 
@@ -337,7 +339,7 @@ def train_gnn(
 
     # ---- data ---------------------------------------------------------------
     if dry_run:
-        graphs = [_make_synthetic_graph(n_features=30, seed=seed)]
+        graphs = [_make_synthetic_graph(n_features=35, seed=seed)]
         epochs = 3
         _logger.info("dry-run mode: using synthetic graph for %d epochs", epochs)
     else:
@@ -357,9 +359,11 @@ def train_gnn(
     model = _build_model(family, in_channels, hidden_channels, out_channels,
                          heads, num_layers, dropout).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", patience=lr_scheduler_patience,
-        factor=lr_scheduler_factor, min_lr=lr_scheduler_min_lr,
+    # Cosine annealing with warm restarts: escapes local minima that ReduceLROnPlateau
+    # gets stuck in after the first step-down. T_0=20, T_mult=2 gives restarts at
+    # epochs 20, 60, 140 — matching typical GNN convergence timescales on CTU-13.
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=20, T_mult=2, eta_min=lr_scheduler_min_lr,
     )
     criterion = FocalLoss(gamma=focal_gamma, alpha=focal_alpha)
 
@@ -405,7 +409,7 @@ def train_gnn(
                 val_loss_vals.append(vl)
         val_loss = float(np.nanmean(val_loss_vals)) if val_loss_vals else float("nan")
 
-        scheduler.step(val_auc if not np.isnan(val_auc) else 0.0)
+        scheduler.step(epoch)
 
         current_lr = float(optimizer.param_groups[0]["lr"])
         record: dict[str, float] = {

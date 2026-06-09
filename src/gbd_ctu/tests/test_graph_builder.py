@@ -91,9 +91,9 @@ def test_node_feature_dim_is_5() -> None:
 
 
 def test_edge_feature_dim_is_22() -> None:
-    """Edge attribute matrix must have exactly 30 columns."""
+    """Edge attribute matrix must have exactly 35 columns."""
     artifact = _build()
-    assert artifact.graph.edge_attr.shape[1] == 30
+    assert artifact.graph.edge_attr.shape[1] == 35
     assert artifact.graph.edge_attr.shape[0] == artifact.graph.edge_index.shape[1]
 
 
@@ -285,7 +285,7 @@ def test_graph_metadata_attributes() -> None:
     assert artifact.graph.node_feature_names is not None
     assert artifact.graph.edge_feature_names is not None
     assert len(artifact.graph.node_feature_names) == 5
-    assert len(artifact.graph.edge_feature_names) == 30
+    assert len(artifact.graph.edge_feature_names) == 35
 
 
 # ===========================================================================
@@ -314,10 +314,10 @@ def test_flow_node_count_equals_flow_count() -> None:
     assert artifact.graph.num_nodes == 3
 
 
-def test_flow_node_feature_dim_is_27() -> None:
-    """Node feature matrix must have exactly 30 columns (flow features)."""
+def test_flow_node_feature_dim_is_35() -> None:
+    """Node feature matrix must have exactly 35 columns (flow features)."""
     artifact = _build_flow()
-    assert artifact.graph.x.shape[1] == 30
+    assert artifact.graph.x.shape[1] == 35
     assert artifact.graph.x.shape[0] == 3
 
 
@@ -397,25 +397,34 @@ def test_flow_no_edge_attr() -> None:
 # ---------------------------------------------------------------------------
 
 def test_flow_train_mask_covers_all_nodes() -> None:
-    """split_name='train' → every flow node is in train_mask."""
+    """Within-graph split: train and val masks must be non-empty.
+
+    FlowGraphBuilder always does a 60/20/20 within-graph random split
+    (ignoring split_name) so every scenario has its own val/test partition.
+    With very small frames (n<5) test_mask may be empty due to rounding.
+    """
     artifact = _build_flow()
-    assert artifact.graph.train_mask.all()
-    assert not artifact.graph.val_mask.any()
-    assert not artifact.graph.test_mask.any()
+    assert artifact.graph.train_mask.any()
+    assert artifact.graph.val_mask.any()
 
 
 def test_flow_val_mask_covers_all_nodes() -> None:
+    """Within-graph split produces a non-empty val mask."""
     builder = FlowGraphBuilder(feature_extractor=FlowFeatureExtractor())
     artifact = builder.build_from_frame(_make_frame(), scenario_id=1, split_name="val")
-    assert artifact.graph.val_mask.all()
-    assert not artifact.graph.train_mask.any()
+    assert artifact.graph.val_mask.any()
 
 
 def test_flow_test_mask_covers_all_nodes() -> None:
+    """Within-graph split: union of train+val+test covers all nodes.
+
+    With very small frames (n<5) test_mask may be empty due to rounding,
+    but the union must always cover all nodes without overlap.
+    """
     builder = FlowGraphBuilder(feature_extractor=FlowFeatureExtractor())
     artifact = builder.build_from_frame(_make_frame(), scenario_id=1, split_name="test")
-    assert artifact.graph.test_mask.all()
-    assert not artifact.graph.train_mask.any()
+    union = artifact.graph.train_mask | artifact.graph.val_mask | artifact.graph.test_mask
+    assert union.all()
 
 
 def test_flow_masks_no_leakage() -> None:
@@ -466,11 +475,11 @@ def test_flow_edge_frame_row_count_matches_edges() -> None:
 
 
 def test_flow_metadata_attributes() -> None:
-    """PyG Data must carry scenario, scenario_id, and 30 node_feature_names."""
+    """PyG Data must carry scenario, scenario_id, and 35 node_feature_names."""
     artifact = _build_flow()
     assert artifact.graph.scenario == "scenario-01"
     assert artifact.graph.scenario_id == 1
-    assert len(artifact.graph.node_feature_names) == 30
+    assert len(artifact.graph.node_feature_names) == 35
     assert artifact.graph.edge_feature_names == []
 
 

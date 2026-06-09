@@ -183,10 +183,10 @@ def test_hybrid_both_branches_have_parameters() -> None:
 
 
 def test_hybrid_classifier_input_is_concatenated() -> None:
-    """The final Linear layer input must be 2*embed_channels."""
+    """The final Linear layer input must be 3*embed_channels (sage+gat+skip)."""
     embed = 32
     model = GraphSageGATHybridClassifier(in_channels=6, embed_channels=embed, out_channels=2)
-    assert model.classifier.in_features == 2 * embed
+    assert model.classifier.in_features == 3 * embed
 
 
 def test_hybrid_param_count_stored_on_init() -> None:
@@ -371,13 +371,15 @@ def test_hybrid_both_branches_activate_via_hook() -> None:
 
 
 def test_hybrid_sage_branch_has_two_conv_layers() -> None:
-    """SAGE branch must have two SAGEConv layers (conv1, conv2)."""
+    """SAGE branch must have three parallel mean+max layer pairs (conv1_mean..conv3_max)."""
     model = GraphSageGATHybridClassifier(in_channels=6, embed_channels=32)
-    assert hasattr(model.sage_branch, "conv1"), "sage_branch missing conv1"
-    assert hasattr(model.sage_branch, "conv2"), "sage_branch missing conv2"
-    # First conv: in → sage_hidden (128); second conv: sage_hidden → embed (32)
-    assert model.sage_branch.bn1.num_features == 128
-    assert model.sage_branch.bn2.num_features == 32
+    assert hasattr(model.sage_branch, "conv1_mean"), "sage_branch missing conv1_mean"
+    assert hasattr(model.sage_branch, "conv1_max"),  "sage_branch missing conv1_max"
+    assert hasattr(model.sage_branch, "conv3_mean"), "sage_branch missing conv3_mean"
+    # BN dimensions: layer1=sage_hidden(64), layer2=sage_hidden(64), layer3=embed(32)
+    assert model.sage_branch.bn1.num_features == 64
+    assert model.sage_branch.bn2.num_features == 64
+    assert model.sage_branch.bn3.num_features == 32
 
 
 def test_hybrid_gat_branch_first_layer_uses_four_heads() -> None:

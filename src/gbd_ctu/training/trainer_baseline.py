@@ -302,7 +302,7 @@ def train_mlp(
     # ---- data ---------------------------------------------------------------
     if dry_run:
         from gbd_ctu.training.trainer_gnn import _make_synthetic_graph
-        graphs = [_make_synthetic_graph(n_nodes=80, n_features=30, seed=seed)]
+        graphs = [_make_synthetic_graph(n_nodes=80, n_features=35, seed=seed)]
         epochs = 3
         _logger.info("dry-run mode: using synthetic graph for %d epochs", epochs)
     else:
