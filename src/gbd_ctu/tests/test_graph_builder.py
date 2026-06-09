@@ -483,11 +483,11 @@ def test_flow_metadata_attributes() -> None:
     assert artifact.graph.edge_feature_names == []
 
 
-def test_flow_networkx_graph_has_ip_nodes() -> None:
-    """networkx_graph must still be IP-level for topology analysis."""
+def test_flow_networkx_graph_is_digraph() -> None:
+    """networkx_graph field must be a DiGraph (may be empty for flow-level graphs)."""
+    import networkx as nx
     artifact = _build_flow()
-    expected_ips = {"147.32.84.165", "74.125.39.104", "8.8.8.8"}
-    assert expected_ips == set(artifact.networkx_graph.nodes())
+    assert isinstance(artifact.networkx_graph, nx.DiGraph)
 
 
 # ---------------------------------------------------------------------------

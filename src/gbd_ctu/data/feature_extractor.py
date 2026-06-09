@@ -292,6 +292,25 @@ class FlowFeatureExtractor:
         raw_matrix = self.raw_transform(frame, scenario=scenario)
         return self.scaler.transform(raw_matrix).astype(np.float32)
 
+    def fit_prepared(self, prepared_frame: pd.DataFrame) -> "FlowFeatureExtractor":
+        """Fit on a frame that has already been through standardize_flow_frame.
+
+        Avoids the double-standardize that occurs when calling fit() on a frame
+        returned by standardize_flow_frame (which build_from_frame always passes).
+        """
+        raw_matrix = prepared_frame[self.feature_names].to_numpy(dtype=np.float32)
+        self.scaler.fit(raw_matrix)
+        self.feature_means_ = np.median(raw_matrix, axis=0).astype(np.float32)
+        self.is_fitted = True
+        return self
+
+    def transform_prepared(self, prepared_frame: pd.DataFrame) -> np.ndarray:
+        """Scale a frame already processed by standardize_flow_frame — no re-standardize."""
+        if not self.is_fitted:
+            raise RuntimeError("FlowFeatureExtractor must be fitted on training data before transform_prepared().")
+        raw_matrix = prepared_frame[self.feature_names].to_numpy(dtype=np.float32)
+        return self.scaler.transform(raw_matrix).astype(np.float32)
+
     def fit_transform(self, frame: pd.DataFrame, scenario: str | None = None) -> np.ndarray:
         """Fit on a training flow frame and return normalized features."""
 

@@ -402,64 +402,47 @@ def _build_temporal_edges(
     if int(ts.max()) == 0 and int(ts.min()) == 0:
         return np.empty((0,), dtype=np.int64), np.empty((0,), dtype=np.int64)
 
-    src_ips = feature_frame["src_addr"].values
-    w = int(window_seconds)
-    rng = np.random.default_rng(42)
+    # Fully vectorized — no Python loop over groups.
+    # Sort all flows by (src_ip_code, time).  Consecutive entries in the sorted
+    # array that share an IP code and fall within the time window become edges.
+    # This is O(N log N) instead of O(N × |unique_IPs|).
+    n        = len(feature_frame)
+    src_ips  = feature_frame["src_addr"].values
+    ip_codes = pd.Categorical(src_ips).codes.astype(np.int32)   # int IPs → fast comparison
+    w        = int(window_seconds)
 
-    src_list: list[int] = []
-    dst_list: list[int] = []
+    sort_idx    = np.lexsort([ts, ip_codes])       # primary: ip; secondary: time
+    sorted_pos  = np.arange(n, dtype=np.int64)[sort_idx]
+    sorted_t    = ts[sort_idx]
+    sorted_code = ip_codes[sort_idx]
 
-    for ip in np.unique(src_ips):
-        pos = np.where(src_ips == ip)[0]
-        if len(pos) < 2:
-            continue
-        if len(pos) > max_flows_per_ip:
-            pos = rng.choice(pos, size=max_flows_per_ip, replace=False)
+    src_arrs: list[np.ndarray] = []
+    dst_arrs: list[np.ndarray] = []
 
-        t = ts[pos]
-        order = np.argsort(t, kind="stable")
-        pos = pos[order]
-        t = t[order]
-        m = len(pos)
+    for offset in range(1, max_neighbors + 1):
+        n_pairs = n - offset
+        if n_pairs <= 0:
+            break
+        # Both conditions must hold: same src IP and within time window.
+        same_ip = sorted_code[:n_pairs] == sorted_code[offset:]
+        dt      = sorted_t[offset:] - sorted_t[:n_pairs]
+        # dt can be negative when the offset crosses an IP boundary; those are excluded
+        # by same_ip being False, but guard with dt >= 0 just in case.
+        mask = same_ip & (dt >= 0) & (dt <= w)
+        if not mask.any():
+            continue                            # no edges at this offset; try next
 
-        lo = 0
-        for i in range(m):
-            while t[i] - t[lo] > w:
-                lo += 1
-            hi = i + 1
-            while hi < m and t[hi] - t[i] <= w:
-                hi += 1
+        fwd_i = sorted_pos[:n_pairs][mask]
+        fwd_j = sorted_pos[offset:][mask]
+        src_arrs.append(fwd_i);  dst_arrs.append(fwd_j)
+        src_arrs.append(fwd_j);  dst_arrs.append(fwd_i)
 
-            left_p  = pos[lo:i]
-            right_p = pos[i + 1:hi]
-            if len(left_p) == 0 and len(right_p) == 0:
-                continue
-
-            if len(left_p) and len(right_p):
-                cand   = np.concatenate([left_p, right_p])
-                cand_t = np.concatenate([t[lo:i], t[i + 1:hi]])
-            elif len(left_p):
-                cand   = left_p
-                cand_t = t[lo:i]
-            else:
-                cand   = right_p
-                cand_t = t[i + 1:hi]
-
-            k = min(max_neighbors, len(cand))
-            if k < len(cand):
-                nn = np.argpartition(np.abs(cand_t - t[i]), k - 1)[:k]
-                cand = cand[nn]
-
-            for nbr in cand:
-                src_list.append(int(pos[i]))
-                dst_list.append(int(nbr))
-
-    if not src_list:
+    if not src_arrs:
         return np.empty((0,), dtype=np.int64), np.empty((0,), dtype=np.int64)
 
-    s = np.array(src_list, dtype=np.int64)
-    d = np.array(dst_list, dtype=np.int64)
-    return np.concatenate([s, d]), np.concatenate([d, s])
+    s = np.concatenate(src_arrs).astype(np.int64)
+    d = np.concatenate(dst_arrs).astype(np.int64)
+    return s, d
 
 
 class FlowGraphBuilder:
@@ -569,9 +552,13 @@ class FlowGraphBuilder:
         if self.max_flows is not None and len(feature_frame) > self.max_flows:
             feature_frame = _stratified_sample(feature_frame, self.max_flows, seed=self.seed)
 
+        # Use *_prepared variants: feature_frame is already standardized by the
+        # standardize_flow_frame call above; calling fit/transform directly would
+        # re-run standardize_flow_frame a second time, doubling the cost on large
+        # scenarios (2.8 M rows ≈ +11 s per call).
         if not self.feature_extractor.is_fitted:
-            self.feature_extractor.fit(feature_frame, scenario=scenario_label)
-        node_feature_array = self.feature_extractor.transform(feature_frame, scenario=scenario_label)
+            self.feature_extractor.fit_prepared(feature_frame)
+        node_feature_array = self.feature_extractor.transform_prepared(feature_frame)
 
         labels = feature_frame["label_binary"].to_numpy(dtype=np.int64)
         n_flows = len(feature_frame)
@@ -627,9 +614,9 @@ class FlowGraphBuilder:
         else:
             edge_frame = pd.DataFrame(columns=["flow_idx_a", "flow_idx_b"])
 
-        # NetworkX IP-level graph kept for topology analysis backward-compat
-        ip_addresses = sorted(set(feature_frame["src_addr"]).union(set(feature_frame["dst_addr"])))
-        networkx_graph = _build_networkx_graph(feature_frame, ip_addresses)
+        # NetworkX IP-level graph: skip for flow-level graphs (can have millions of IPs).
+        # Only the PyG .pt file is loaded at training time; graphml is not needed here.
+        networkx_graph = nx.DiGraph()
 
         return GraphBuildArtifact(
             graph=graph,
