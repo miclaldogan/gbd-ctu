@@ -207,6 +207,105 @@ def _train_one_epoch(model, graphs, criterion, optimizer, batch_size: int,
     return running_loss / max(n_batches, 1)
 
 
+def _train_one_epoch_sampled(
+    model,
+    graphs,
+    optimizer,
+    device: "torch.device | None",
+    focal_gamma: float = 2.0,
+    num_neighbors_per_layer: int = 15,
+    batch_size: int = 2048,
+    hub_threshold: int = 100,
+    hub_max_degree: int = 20,
+) -> float:
+    """Mini-batch training via per-graph NeighborLoader with hub-degree capping.
+
+    Processes one graph at a time to avoid the C++ sampling-structure OOM
+    that occurs when all 13 CTU-13 graphs are loaded simultaneously.
+    Hub nodes (degree > hub_threshold) have their outgoing edges subsampled
+    using inverse-degree weights so low-degree (botnet C&C) destinations are
+    preferentially sampled over high-degree gateways.
+    """
+    from torch_geometric.utils import degree as pyg_degree
+    from copy import copy as shallow_copy
+
+    model.train()
+    running_loss = 0.0
+    n_batches = 0
+    n_layers = 3  # SAGE branch depth — keep in sync with _SageBranch
+
+    for graph in graphs:
+        train_idx = graph.train_mask.nonzero(as_tuple=False).view(-1)
+        if train_idx.numel() == 0:
+            continue
+
+        alpha = _scenario_focal_alpha(graph)
+        per_graph_criterion = FocalLoss(gamma=focal_gamma, alpha=alpha)
+
+        # Cap hub-node edges with inverse-degree weighted subsampling.
+        # Only applied during training (not eval) to prevent hub aggregation
+        # from drowning out rare botnet peer signals.
+        ei = graph.edge_index
+        n  = int(graph.num_nodes)
+        deg = pyg_degree(ei[0], num_nodes=n, dtype=torch.long)
+        hub_nodes = (deg > hub_threshold).nonzero(as_tuple=True)[0]
+
+        if hub_nodes.numel() > 0:
+            keep = torch.ones(ei.size(1), dtype=torch.bool)
+            gen  = torch.Generator()
+            gen.manual_seed(42)
+            dst_deg = deg[ei[1]].float().clamp(min=1.0)
+
+            for hub in hub_nodes:
+                hub_mask = (ei[0] == hub)
+                hub_idx  = hub_mask.nonzero(as_tuple=True)[0]
+                if hub_idx.numel() <= hub_max_degree:
+                    continue
+                # Inverse destination-degree weights: prefer low-degree (botnet) targets
+                weights   = 1.0 / dst_deg[hub_idx]
+                kept_local = torch.multinomial(weights, hub_max_degree,
+                                               replacement=False, generator=gen)
+                drop_mask = torch.ones(hub_idx.numel(), dtype=torch.bool)
+                drop_mask[kept_local] = False
+                keep[hub_idx[drop_mask]] = False
+
+            train_graph = shallow_copy(graph)
+            train_graph.edge_index = ei[:, keep]
+        else:
+            train_graph = graph
+
+        loader = NeighborLoader(
+            train_graph,
+            num_neighbors=[num_neighbors_per_layer] * n_layers,
+            input_nodes=train_idx,
+            batch_size=batch_size,
+            shuffle=True,
+        )
+
+        for batch in loader:
+            batch    = batch.to(device)
+            batch_sz = batch.batch_size
+
+            optimizer.zero_grad()
+            logits     = model(batch)[:batch_sz]
+            labels     = batch.y[:batch_sz]
+            train_mask = batch.train_mask[:batch_sz]
+
+            if not train_mask.any():
+                continue
+
+            loss = per_graph_criterion(logits[train_mask], labels[train_mask])
+            loss.backward()
+            optimizer.step()
+            running_loss += float(loss.item())
+            n_batches    += 1
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    return running_loss / max(n_batches, 1)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -306,6 +405,9 @@ def train_gnn(
     lr_scheduler_patience: int = 5,
     lr_scheduler_factor: float = 0.5,
     lr_scheduler_min_lr: float = 1e-5,
+    cosine_T0: int = 20,
+    cosine_T_mult: int = 2,
+    use_neighbor_sampling: bool = False,
     num_neighbors: list[int] | None = None,
     dry_run: bool = False,
     scenario_ids: list[int] | None = None,
@@ -360,10 +462,10 @@ def train_gnn(
                          heads, num_layers, dropout).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     # Cosine annealing with warm restarts: escapes local minima that ReduceLROnPlateau
-    # gets stuck in after the first step-down. T_0=20, T_mult=2 gives restarts at
-    # epochs 20, 60, 140 — matching typical GNN convergence timescales on CTU-13.
+    # gets stuck in after the first step-down. cosine_T0=30, T_mult=2 gives restarts at
+    # epochs 30, 90, 210 — wider cycles give longer exploitation phases.
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=20, T_mult=2, eta_min=lr_scheduler_min_lr,
+        optimizer, T_0=cosine_T0, T_mult=cosine_T_mult, eta_min=lr_scheduler_min_lr,
     )
     criterion = FocalLoss(gamma=focal_gamma, alpha=focal_alpha)
 
@@ -388,9 +490,19 @@ def train_gnn(
     stopped_epoch: int = epochs
 
     for epoch in range(1, epochs + 1):
-        train_loss = _train_one_epoch(model, graphs, criterion, optimizer,
-                                      batch_size=batch_size, num_neighbors=num_neighbors,
-                                      device=device, focal_gamma=focal_gamma)
+        if use_neighbor_sampling:
+            train_loss = _train_one_epoch_sampled(
+                model, graphs, optimizer, device,
+                focal_gamma=focal_gamma,
+                num_neighbors_per_layer=15,
+                batch_size=batch_size,
+                hub_threshold=100,
+                hub_max_degree=20,
+            )
+        else:
+            train_loss = _train_one_epoch(model, graphs, criterion, optimizer,
+                                          batch_size=batch_size, num_neighbors=num_neighbors,
+                                          device=device, focal_gamma=focal_gamma)
 
         val_records = _evaluate_split(model, graphs, split="val", device=device)
         val_auc = float(np.nanmean([r["auc"] for r in val_records])) if val_records else float("nan")

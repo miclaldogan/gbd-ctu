@@ -56,6 +56,14 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--wandb-project", default=None,
                         help="W&B project name (omit to disable W&B).")
+    parser.add_argument("--early-stop-patience", type=int, default=10,
+                        help="Epochs without val-AUC improvement before stopping.")
+    parser.add_argument("--cosine-t0", type=int, default=20,
+                        help="CosineAnnealingWarmRestarts first cycle length.")
+    parser.add_argument("--cosine-t-mult", type=int, default=2,
+                        help="CosineAnnealingWarmRestarts cycle multiplier.")
+    parser.add_argument("--neighbor-sampling", action="store_true",
+                        help="Use NeighborLoader mini-batch training (15 nbrs/layer).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Skip real data; run 3 epochs on a synthetic graph.")
     args = parser.parse_args()
@@ -81,6 +89,10 @@ def main() -> int:
         focal_alpha=args.focal_alpha,
         seed=args.seed,
         wandb_project=args.wandb_project,
+        early_stop_patience=args.early_stop_patience,
+        cosine_T0=args.cosine_t0,
+        cosine_T_mult=args.cosine_t_mult,
+        use_neighbor_sampling=args.neighbor_sampling,
         dry_run=args.dry_run,
         scenario_ids=[args.scenario] if args.scenario is not None else None,
     )

@@ -494,9 +494,15 @@ def test_flow_networkx_graph_has_ip_nodes() -> None:
 # Max-degree cap
 # ---------------------------------------------------------------------------
 
-def test_flow_max_degree_1_produces_no_edges() -> None:
-    """max_degree=1 means no IP has 2+ flows to pair → no edges."""
-    # With max_degree=1 each IP keeps only 1 flow → no pairs possible
+def test_flow_max_degree_1_produces_no_shared_ip_edges() -> None:
+    """max_degree=1 means no IP has 2+ flows to pair → no shared-IP edges.
+
+    Temporal proximity edges may still exist for flows from the same src IP
+    that fall within the 30-second sliding window.
+    """
     artifact = _build_flow(max_degree=1)
-    assert artifact.graph.edge_index.shape[1] == 0
+    # All edge_type==0 (shared-IP) edges must be absent; type==1 (temporal) may exist
+    if artifact.graph.edge_index.shape[1] > 0:
+        assert hasattr(artifact.graph, "edge_type")
+        assert (artifact.graph.edge_type == 0).sum() == 0
 

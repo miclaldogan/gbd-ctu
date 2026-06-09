@@ -378,6 +378,90 @@ def _build_flow_edges(
     return np.concatenate([a, b]), np.concatenate([b, a])
 
 
+def _build_temporal_edges(
+    feature_frame: pd.DataFrame,
+    window_seconds: float = 30.0,
+    max_neighbors: int = 5,
+    max_flows_per_ip: int = 5_000,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Connect flows from the same src IP that fall within a sliding time window.
+
+    Beaconing botnets make periodic connections with small inter-arrival times.
+    Temporal edges expose this periodicity to the GNN independently of shared-IP
+    co-occurrence, providing causal (not just coincidence) structure.
+
+    Returns symmetric edge pairs (both directions).
+    """
+    if feature_frame.empty or "start_time" not in feature_frame.columns:
+        return np.empty((0,), dtype=np.int64), np.empty((0,), dtype=np.int64)
+
+    ts_raw = pd.to_datetime(feature_frame["start_time"], errors="coerce").values
+    # NaT → 0 ns, then convert to integer seconds
+    ts = (ts_raw.astype("int64", copy=True) // 1_000_000_000).astype(np.int64)
+    # Bail if all timestamps are the epoch sentinel (NaT / unparseable)
+    if int(ts.max()) == 0 and int(ts.min()) == 0:
+        return np.empty((0,), dtype=np.int64), np.empty((0,), dtype=np.int64)
+
+    src_ips = feature_frame["src_addr"].values
+    w = int(window_seconds)
+    rng = np.random.default_rng(42)
+
+    src_list: list[int] = []
+    dst_list: list[int] = []
+
+    for ip in np.unique(src_ips):
+        pos = np.where(src_ips == ip)[0]
+        if len(pos) < 2:
+            continue
+        if len(pos) > max_flows_per_ip:
+            pos = rng.choice(pos, size=max_flows_per_ip, replace=False)
+
+        t = ts[pos]
+        order = np.argsort(t, kind="stable")
+        pos = pos[order]
+        t = t[order]
+        m = len(pos)
+
+        lo = 0
+        for i in range(m):
+            while t[i] - t[lo] > w:
+                lo += 1
+            hi = i + 1
+            while hi < m and t[hi] - t[i] <= w:
+                hi += 1
+
+            left_p  = pos[lo:i]
+            right_p = pos[i + 1:hi]
+            if len(left_p) == 0 and len(right_p) == 0:
+                continue
+
+            if len(left_p) and len(right_p):
+                cand   = np.concatenate([left_p, right_p])
+                cand_t = np.concatenate([t[lo:i], t[i + 1:hi]])
+            elif len(left_p):
+                cand   = left_p
+                cand_t = t[lo:i]
+            else:
+                cand   = right_p
+                cand_t = t[i + 1:hi]
+
+            k = min(max_neighbors, len(cand))
+            if k < len(cand):
+                nn = np.argpartition(np.abs(cand_t - t[i]), k - 1)[:k]
+                cand = cand[nn]
+
+            for nbr in cand:
+                src_list.append(int(pos[i]))
+                dst_list.append(int(nbr))
+
+    if not src_list:
+        return np.empty((0,), dtype=np.int64), np.empty((0,), dtype=np.int64)
+
+    s = np.array(src_list, dtype=np.int64)
+    d = np.array(dst_list, dtype=np.int64)
+    return np.concatenate([s, d]), np.concatenate([d, s])
+
+
 class FlowGraphBuilder:
     """Build flow-level PyG graphs from CTU-13 scenario flow tables.
 
@@ -492,11 +576,26 @@ class FlowGraphBuilder:
         labels = feature_frame["label_binary"].to_numpy(dtype=np.int64)
         n_flows = len(feature_frame)
 
-        edge_src, edge_dst = _build_flow_edges(feature_frame, max_degree=self.max_degree)
+        # Shared-IP edges (edge_type=0) and temporal-proximity edges (edge_type=1)
+        ip_src, ip_dst   = _build_flow_edges(feature_frame, max_degree=self.max_degree)
+        tp_src, tp_dst   = _build_temporal_edges(feature_frame, window_seconds=30.0, max_neighbors=5)
+
+        parts_src  = [p for p in (ip_src, tp_src)  if p.size > 0]
+        parts_dst  = [p for p in (ip_dst, tp_dst)  if p.size > 0]
+        parts_type = (
+            ([np.zeros(ip_src.size,  dtype=np.int64)] if ip_src.size > 0 else []) +
+            ([np.ones( tp_src.size,  dtype=np.int64)] if tp_src.size > 0 else [])
+        )
+
+        edge_src      = np.concatenate(parts_src)  if parts_src  else np.empty((0,), dtype=np.int64)
+        edge_dst      = np.concatenate(parts_dst)  if parts_dst  else np.empty((0,), dtype=np.int64)
+        edge_type_arr = np.concatenate(parts_type) if parts_type else np.empty((0,), dtype=np.int64)
+
         if self.self_loops and n_flows > 0:
             sl = np.arange(n_flows, dtype=np.int64)
-            edge_src = np.concatenate([edge_src, sl])
-            edge_dst = np.concatenate([edge_dst, sl])
+            edge_src      = np.concatenate([edge_src,      sl])
+            edge_dst      = np.concatenate([edge_dst,      sl])
+            edge_type_arr = np.concatenate([edge_type_arr, np.zeros(n_flows, dtype=np.int64)])
 
         if edge_src.size > 0:
             edge_index = torch.tensor(np.stack([edge_src, edge_dst]), dtype=torch.long)
@@ -507,6 +606,7 @@ class FlowGraphBuilder:
         graph = Data(
             x=torch.tensor(node_feature_array, dtype=torch.float32),
             edge_index=edge_index,
+            edge_type=torch.tensor(edge_type_arr, dtype=torch.long),
             y=torch.tensor(labels, dtype=torch.long),
             train_mask=torch.tensor(train_mask, dtype=torch.bool),
             val_mask=torch.tensor(val_mask, dtype=torch.bool),
