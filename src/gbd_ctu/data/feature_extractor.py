@@ -1,9 +1,9 @@
 """GBD-CTU NetFlow feature extraction.
 
-This module extracts a fixed 27-dimensional feature vector from CTU-13 NetFlow
+This module extracts a fixed 30-dimensional feature vector from CTU-13 NetFlow
 records and applies StandardScaler normalization. Inputs are raw or normalized
 flow DataFrames; outputs are normalized DataFrames and numpy arrays shaped
-`(n_flows, 27)` suitable for graph edge features and classical baselines.
+`(n_flows, 30)` suitable for graph edge features and classical baselines.
 """
 
 from __future__ import annotations
@@ -55,6 +55,12 @@ FLOW_FEATURE_COLUMNS: list[str] = [
     "log_total_packets",
     "log_bytes_per_second",
     "log_packets_per_second",
+    # --- temporal + asymmetry features (3) ---
+    # Botnets beacon at irregular/off-peak hours and show asymmetric byte
+    # counts (small outbound command, large inbound response or vice-versa).
+    "hour_of_day",        # 0-23 normalised to [0,1]
+    "is_nighttime",       # 1 if 23:00-06:00 (common botnet hours)
+    "src_to_dst_ratio",   # src_bytes / total_bytes — flow direction asymmetry
 ]
 
 EDGE_FEATURE_COLUMNS: list[str] = FLOW_FEATURE_COLUMNS.copy()
@@ -174,6 +180,14 @@ def standardize_flow_frame(frame: pd.DataFrame, scenario: str | None = None) -> 
     normalized["log_bytes_per_second"] = np.log1p(normalized["bytes_per_second"].clip(lower=0))
     normalized["log_packets_per_second"] = np.log1p(normalized["packets_per_second"].clip(lower=0))
 
+    # Temporal + asymmetry features
+    hour = normalized["start_time"].dt.hour.fillna(0).astype(float)
+    normalized["hour_of_day"] = hour / 23.0
+    normalized["is_nighttime"] = ((hour >= 23) | (hour <= 6)).astype(float)
+    normalized["src_to_dst_ratio"] = [
+        safe_divide(s, b) for s, b in zip(normalized["src_bytes"], normalized["total_bytes"])
+    ]
+
     return normalized.sort_values("start_time").reset_index(drop=True)
 
 
@@ -192,7 +206,7 @@ class FlowFeatureExtractor:
         self.scaler = StandardScaler()
         self.is_fitted = False
         #: Per-feature means of the raw (unscaled) training features.
-        #: Shape ``(27,)``.  Set by :meth:`fit` and :meth:`fit_transform`.
+        #: Shape ``(30,)``.  Set by :meth:`fit` and :meth:`fit_transform`.
         self.feature_means_: np.ndarray | None = None
 
     def prepare_frame(self, frame: pd.DataFrame, scenario: str | None = None) -> pd.DataFrame:

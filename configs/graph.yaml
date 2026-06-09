@@ -2,8 +2,8 @@ graph:
   train_size: 0.6
   val_size: 0.2
   seed: 42
-  # flow-level graph: nodes = flows (27-dim features), edges = shared IP
-  node_feature_dim: 27
+  # flow-level graph: nodes = flows (30-dim features), edges = shared IP
+  node_feature_dim: 30
   edge_feature_dim: 0
   max_degree: 50
   self_loops: false

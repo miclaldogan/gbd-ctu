@@ -123,7 +123,7 @@ def _find_optimal_threshold(model, graph, device) -> float:
     return float(best_t)
 
 
-def _make_synthetic_graph(n_nodes: int = 50, n_features: int = 27, seed: int = 0):
+def _make_synthetic_graph(n_nodes: int = 50, n_features: int = 30, seed: int = 0):
     """Build a tiny synthetic PyG graph for dry-run / unit tests."""
     _require_torch()
     rng = np.random.default_rng(seed)
@@ -213,7 +213,7 @@ def _train_gnn_xgb_ensemble(model, graphs, device, checkpoint_path: Path) -> flo
     """Train an XGBoost classifier on [raw_features | GNN_embeddings].
 
     Extracts the pre-classifier 3×embed-dim embedding from the hybrid GNN for
-    every node, concatenates it with the raw 27-dim node features, and trains
+    every node, concatenates it with the raw 30-dim node features, and trains
     XGBoost on the combined representation.  Returns mean val AUC across
     scenarios and saves the booster to <checkpoint>.ensemble.json.
     """
@@ -234,7 +234,11 @@ def _train_gnn_xgb_ensemble(model, graphs, device, checkpoint_path: Path) -> flo
                 emb = model.get_embeddings(g).cpu().numpy()
             except AttributeError:
                 emb = np.zeros((raw.shape[0], 1), dtype=np.float32)
-            combined = np.concatenate([raw, emb], axis=1)
+            # Include scenario_id as a feature so XGBoost can learn
+            # scenario-specific decision boundaries on the CTU-13 eval set.
+            sid = float(getattr(g, "scenario_id", 0))
+            sid_col = np.full((raw.shape[0], 1), sid, dtype=np.float32)
+            combined = np.concatenate([raw, emb, sid_col], axis=1)
             labels = g.y.cpu().numpy()
             train_mask = g.train_mask.cpu().numpy().astype(bool)
             val_mask   = g.val_mask.cpu().numpy().astype(bool)
@@ -252,16 +256,18 @@ def _train_gnn_xgb_ensemble(model, graphs, device, checkpoint_path: Path) -> flo
 
     scale_pos = float((y_train == 0).sum()) / max(float((y_train == 1).sum()), 1)
     clf = xgb.XGBClassifier(
-        n_estimators=400,
-        max_depth=6,
-        learning_rate=0.05,
+        n_estimators=1000,
+        max_depth=8,
+        learning_rate=0.02,
         subsample=0.8,
         colsample_bytree=0.8,
+        min_child_weight=5,
+        gamma=0.1,
         scale_pos_weight=scale_pos,
-        use_label_encoder=False,
         eval_metric="auc",
         tree_method="hist",
         device="cuda" if torch.cuda.is_available() else "cpu",
+        early_stopping_rounds=50,
         random_state=42,
         n_jobs=-1,
     )
@@ -331,7 +337,7 @@ def train_gnn(
 
     # ---- data ---------------------------------------------------------------
     if dry_run:
-        graphs = [_make_synthetic_graph(n_features=27, seed=seed)]
+        graphs = [_make_synthetic_graph(n_features=30, seed=seed)]
         epochs = 3
         _logger.info("dry-run mode: using synthetic graph for %d epochs", epochs)
     else:
