@@ -91,9 +91,9 @@ def test_node_feature_dim_is_5() -> None:
 
 
 def test_edge_feature_dim_is_22() -> None:
-    """Edge attribute matrix must have exactly 22 columns."""
+    """Edge attribute matrix must have exactly 27 columns."""
     artifact = _build()
-    assert artifact.graph.edge_attr.shape[1] == 22
+    assert artifact.graph.edge_attr.shape[1] == 27
     assert artifact.graph.edge_attr.shape[0] == artifact.graph.edge_index.shape[1]
 
 
@@ -285,7 +285,7 @@ def test_graph_metadata_attributes() -> None:
     assert artifact.graph.node_feature_names is not None
     assert artifact.graph.edge_feature_names is not None
     assert len(artifact.graph.node_feature_names) == 5
-    assert len(artifact.graph.edge_feature_names) == 22
+    assert len(artifact.graph.edge_feature_names) == 27
 
 
 # ===========================================================================
@@ -314,10 +314,10 @@ def test_flow_node_count_equals_flow_count() -> None:
     assert artifact.graph.num_nodes == 3
 
 
-def test_flow_node_feature_dim_is_22() -> None:
-    """Node feature matrix must have exactly 22 columns (flow features)."""
+def test_flow_node_feature_dim_is_27() -> None:
+    """Node feature matrix must have exactly 27 columns (flow features)."""
     artifact = _build_flow()
-    assert artifact.graph.x.shape[1] == 22
+    assert artifact.graph.x.shape[1] == 27
     assert artifact.graph.x.shape[0] == 3
 
 
@@ -466,11 +466,11 @@ def test_flow_edge_frame_row_count_matches_edges() -> None:
 
 
 def test_flow_metadata_attributes() -> None:
-    """PyG Data must carry scenario, scenario_id, and 22 node_feature_names."""
+    """PyG Data must carry scenario, scenario_id, and 27 node_feature_names."""
     artifact = _build_flow()
     assert artifact.graph.scenario == "scenario-01"
     assert artifact.graph.scenario_id == 1
-    assert len(artifact.graph.node_feature_names) == 22
+    assert len(artifact.graph.node_feature_names) == 27
     assert artifact.graph.edge_feature_names == []
 
 

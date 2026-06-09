@@ -22,7 +22,7 @@ from pathlib import Path
 from gbd_ctu.training.trainer_gnn import train_gnn
 
 
-_FAMILIES = ["graphsage", "gat", "hybrid"]
+_FAMILIES = ["graphsage", "gat", "hybrid", "mlp"]
 
 
 def main() -> int:

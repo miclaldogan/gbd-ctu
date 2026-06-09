@@ -44,9 +44,11 @@ class _SageBranch(nn.Module):
 
     def __init__(self, in_channels: int, hidden: int, embed: int, dropout: float) -> None:
         super().__init__()
-        self.conv1 = SAGEConv(in_channels, hidden)
+        # max aggregation preserves the most extreme neighbor feature values,
+        # preventing hub-IP mean aggregation from diluting botnet signal.
+        self.conv1 = SAGEConv(in_channels, hidden, aggr="max")
         self.bn1 = nn.BatchNorm1d(hidden)
-        self.conv2 = SAGEConv(hidden, embed)
+        self.conv2 = SAGEConv(hidden, embed, aggr="max")
         self.bn2 = nn.BatchNorm1d(embed)
         self.dropout_prob = dropout
 
@@ -174,4 +176,16 @@ class GraphSageGATHybridClassifier(nn.Module):
             return logits, attn
         gat_embed = self.gat_branch(x, edge_index)
         return self.classifier(torch.cat([sage_embed, gat_embed, skip], dim=-1))
+
+    def get_embeddings(self, data) -> "torch.Tensor":
+        """Return the pre-classifier embedding for each node (shape [N, 3*embed]).
+
+        Used by the GNN+XGBoost ensemble to build an enriched feature matrix.
+        """
+        x, edge_index = data.x, data.edge_index
+        with torch.no_grad():
+            skip = functional.relu(self.skip(x))
+            sage_embed = self.sage_branch(x, edge_index)
+            gat_embed = self.gat_branch(x, edge_index)
+        return torch.cat([sage_embed, gat_embed, skip], dim=-1)
 

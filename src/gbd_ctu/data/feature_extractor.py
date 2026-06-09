@@ -1,9 +1,9 @@
 """GBD-CTU NetFlow feature extraction.
 
-This module extracts a fixed 22-dimensional feature vector from CTU-13 NetFlow
+This module extracts a fixed 27-dimensional feature vector from CTU-13 NetFlow
 records and applies StandardScaler normalization. Inputs are raw or normalized
 flow DataFrames; outputs are normalized DataFrames and numpy arrays shaped
-`(n_flows, 22)` suitable for graph edge features and classical baselines.
+`(n_flows, 27)` suitable for graph edge features and classical baselines.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from gbd_ctu.data.utils import binary_label, normalize_column_name, safe_divide
 
 
 FLOW_FEATURE_COLUMNS: list[str] = [
+    # --- raw features (22) ---
     "duration",
     "proto_tcp",
     "proto_udp",
@@ -45,6 +46,15 @@ FLOW_FEATURE_COLUMNS: list[str] = [
     "bytes_per_second",
     "tos_src",
     "tos_dst",
+    # --- log-transformed derived features (5) ---
+    # Heavy-tailed flow metrics compress poorly for linear layers; log1p
+    # makes them more Gaussian and helps both the skip-connection MLP path
+    # and XGBoost/RF baselines that receive the same feature matrix.
+    "log_duration",
+    "log_total_bytes",
+    "log_total_packets",
+    "log_bytes_per_second",
+    "log_packets_per_second",
 ]
 
 EDGE_FEATURE_COLUMNS: list[str] = FLOW_FEATURE_COLUMNS.copy()
@@ -156,6 +166,14 @@ def standardize_flow_frame(frame: pd.DataFrame, scenario: str | None = None) -> 
     ]
     normalized["tos_src"] = normalized["src_tos"]
     normalized["tos_dst"] = normalized["dst_tos"]
+
+    # Log-transformed derived features
+    normalized["log_duration"] = np.log1p(normalized["duration"].clip(lower=0))
+    normalized["log_total_bytes"] = np.log1p(normalized["total_bytes"].clip(lower=0))
+    normalized["log_total_packets"] = np.log1p(normalized["total_packets"].clip(lower=0))
+    normalized["log_bytes_per_second"] = np.log1p(normalized["bytes_per_second"].clip(lower=0))
+    normalized["log_packets_per_second"] = np.log1p(normalized["packets_per_second"].clip(lower=0))
+
     return normalized.sort_values("start_time").reset_index(drop=True)
 
 
@@ -174,7 +192,7 @@ class FlowFeatureExtractor:
         self.scaler = StandardScaler()
         self.is_fitted = False
         #: Per-feature means of the raw (unscaled) training features.
-        #: Shape ``(22,)``.  Set by :meth:`fit` and :meth:`fit_transform`.
+        #: Shape ``(27,)``.  Set by :meth:`fit` and :meth:`fit_transform`.
         self.feature_means_: np.ndarray | None = None
 
     def prepare_frame(self, frame: pd.DataFrame, scenario: str | None = None) -> pd.DataFrame:

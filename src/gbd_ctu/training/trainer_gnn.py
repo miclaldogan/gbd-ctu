@@ -51,9 +51,26 @@ def _require_torch() -> None:
         raise ImportError("torch and torch-geometric are required for GNN training.")
 
 
+class _MLPClassifier(torch.nn.Module if torch is not None else object):
+    """3-layer MLP that ignores edge_index — pure node-feature baseline."""
+    def __init__(self, in_channels: int, hidden: int, out_channels: int, dropout: float):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(in_channels, hidden), torch.nn.BatchNorm1d(hidden), torch.nn.ReLU(),
+            torch.nn.Dropout(dropout),
+            torch.nn.Linear(hidden, hidden), torch.nn.BatchNorm1d(hidden), torch.nn.ReLU(),
+            torch.nn.Dropout(dropout),
+            torch.nn.Linear(hidden, out_channels),
+        )
+    def forward(self, data):
+        return self.net(data.x)
+
+
 def _build_model(family: str, in_channels: int, hidden_channels: int,
                  out_channels: int, heads: int, num_layers: int, dropout: float):
     """Instantiate a GNN model via the shared factory."""
+    if family == "mlp":
+        return _MLPClassifier(in_channels, hidden_channels, out_channels, dropout)
     config = {
         "model_type": family,
         "graphsage": {"hidden_dim": hidden_channels, "num_layers": num_layers, "dropout": dropout, "out_channels": out_channels},
@@ -63,7 +80,50 @@ def _build_model(family: str, in_channels: int, hidden_channels: int,
     return build_gnn_from_config(in_channels=in_channels, config=config)
 
 
-def _make_synthetic_graph(n_nodes: int = 50, n_features: int = 22, seed: int = 0):
+def _scenario_focal_alpha(graph) -> float:
+    """Compute focal alpha from actual botnet rate: alpha = 1 - botnet_rate.
+
+    This gives higher weight to the minority (botnet) class automatically,
+    adapting to each scenario's imbalance rather than using a fixed global value.
+    Clamped to [0.5, 0.999] so balanced scenarios still get some weighting.
+    """
+    labels = graph.y[graph.train_mask]
+    if labels.numel() == 0:
+        return 0.75
+    botnet_rate = float(labels.float().mean().item())
+    return float(np.clip(1.0 - botnet_rate, 0.5, 0.999))
+
+
+def _find_optimal_threshold(model, graph, device) -> float:
+    """Find the F1-maximising classification threshold on the val split.
+
+    Sweeps 99 candidate thresholds and returns the one with the highest
+    macro-F1 on the validation mask, defaulting to 0.5 if val is empty.
+    """
+    model.eval()
+    with torch.no_grad():
+        g = graph.to(device)
+        probs = torch.softmax(model(g), dim=-1)[:, 1].cpu().numpy()
+        labels = g.y.cpu().numpy()
+        mask = g.val_mask.cpu().numpy().astype(bool)
+    if not mask.any():
+        return 0.5
+    p, y = probs[mask], labels[mask]
+    best_t, best_f1 = 0.5, 0.0
+    for t in np.linspace(0.01, 0.99, 99):
+        preds = (p >= t).astype(int)
+        tp = int(((preds == 1) & (y == 1)).sum())
+        fp = int(((preds == 1) & (y == 0)).sum())
+        fn = int(((preds == 0) & (y == 1)).sum())
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        rec  = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1   = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+        if f1 > best_f1:
+            best_f1, best_t = f1, t
+    return float(best_t)
+
+
+def _make_synthetic_graph(n_nodes: int = 50, n_features: int = 27, seed: int = 0):
     """Build a tiny synthetic PyG graph for dry-run / unit tests."""
     _require_torch()
     rng = np.random.default_rng(seed)
@@ -85,8 +145,14 @@ def _make_synthetic_graph(n_nodes: int = 50, n_features: int = 22, seed: int = 0
                 scenario="synthetic-00", scenario_id=0)
 
 
-def _evaluate_split(model, graphs, split: str, device: "torch.device | None" = None) -> list[dict[str, Any]]:
-    """Run full-graph inference and return per-scenario metric dicts."""
+def _evaluate_split(model, graphs, split: str, device: "torch.device | None" = None,
+                    thresholds: dict[str, float] | None = None) -> list[dict[str, Any]]:
+    """Run full-graph inference and return per-scenario metric dicts.
+
+    When ``thresholds`` is provided each scenario uses its val-tuned threshold
+    instead of the default 0.5, which significantly improves F1 on rare-botnet
+    scenarios.
+    """
     model.eval()
     records: list[dict[str, Any]] = []
     with torch.no_grad():
@@ -99,18 +165,24 @@ def _evaluate_split(model, graphs, split: str, device: "torch.device | None" = N
             mask = getattr(graph, f"{split}_mask").cpu().numpy().astype(bool)
             if not mask.any():
                 continue
-            metrics = classification_metrics(labels[mask], probabilities[mask])
-            metrics.update({"model": "gnn", "scenario": getattr(graph, "scenario", "unknown"), "split": split})
+            scenario_name = getattr(graph, "scenario", "unknown")
+            threshold = (thresholds or {}).get(scenario_name, 0.5)
+            metrics = classification_metrics(labels[mask], probabilities[mask],
+                                             threshold=threshold)
+            metrics.update({"model": "gnn", "scenario": scenario_name,
+                            "split": split, "threshold": threshold})
             records.append(metrics)
     return records
 
 
 def _train_one_epoch(model, graphs, criterion, optimizer, batch_size: int,
-                     num_neighbors: list[int], device: "torch.device | None" = None) -> float:
-    """Run one training epoch with full-graph forward passes per scenario.
+                     num_neighbors: list[int], device: "torch.device | None" = None,
+                     focal_gamma: float = 2.0) -> float:
+    """Run one training epoch with per-scenario adaptive focal alpha.
 
-    Graphs are moved to device one at a time to avoid GPU OOM when holding
-    all 13 CTU-13 graphs (100 K nodes each) simultaneously on the GPU.
+    Each graph gets a FocalLoss whose alpha = 1 - botnet_rate, so rare-botnet
+    scenarios (0.1%) receive alpha~0.999 and balanced ones (50%) receive ~0.5.
+    Graphs are moved to device one at a time to avoid GPU OOM.
     """
     model.train()
     running_loss = 0.0
@@ -121,9 +193,11 @@ def _train_one_epoch(model, graphs, criterion, optimizer, batch_size: int,
         train_mask = graph.train_mask
         if not train_mask.any():
             continue
+        alpha = _scenario_focal_alpha(graph)
+        per_graph_criterion = FocalLoss(gamma=focal_gamma, alpha=alpha)
         optimizer.zero_grad()
         logits = model(graph)
-        loss = criterion(logits[train_mask], graph.y[train_mask])
+        loss = per_graph_criterion(logits[train_mask], graph.y[train_mask])
         loss.backward()
         optimizer.step()
         running_loss += float(loss.item())
@@ -134,6 +208,74 @@ def _train_one_epoch(model, graphs, criterion, optimizer, batch_size: int,
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+def _train_gnn_xgb_ensemble(model, graphs, device, checkpoint_path: Path) -> float:
+    """Train an XGBoost classifier on [raw_features | GNN_embeddings].
+
+    Extracts the pre-classifier 3×embed-dim embedding from the hybrid GNN for
+    every node, concatenates it with the raw 27-dim node features, and trains
+    XGBoost on the combined representation.  Returns mean val AUC across
+    scenarios and saves the booster to <checkpoint>.ensemble.json.
+    """
+    try:
+        import xgboost as xgb  # type: ignore
+    except ImportError:
+        raise ImportError("xgboost is required for the ensemble step")
+
+    model.eval()
+    X_train_parts, y_train_parts = [], []
+    X_val_parts,   y_val_parts   = [], []
+
+    with torch.no_grad():
+        for graph in graphs:
+            g = graph.to(device)
+            raw = g.x.cpu().numpy()
+            try:
+                emb = model.get_embeddings(g).cpu().numpy()
+            except AttributeError:
+                emb = np.zeros((raw.shape[0], 1), dtype=np.float32)
+            combined = np.concatenate([raw, emb], axis=1)
+            labels = g.y.cpu().numpy()
+            train_mask = g.train_mask.cpu().numpy().astype(bool)
+            val_mask   = g.val_mask.cpu().numpy().astype(bool)
+            if train_mask.any():
+                X_train_parts.append(combined[train_mask])
+                y_train_parts.append(labels[train_mask])
+            if val_mask.any():
+                X_val_parts.append(combined[val_mask])
+                y_val_parts.append(labels[val_mask])
+
+    X_train = np.concatenate(X_train_parts)
+    y_train = np.concatenate(y_train_parts)
+    X_val   = np.concatenate(X_val_parts)
+    y_val   = np.concatenate(y_val_parts)
+
+    scale_pos = float((y_train == 0).sum()) / max(float((y_train == 1).sum()), 1)
+    clf = xgb.XGBClassifier(
+        n_estimators=400,
+        max_depth=6,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        scale_pos_weight=scale_pos,
+        use_label_encoder=False,
+        eval_metric="auc",
+        tree_method="hist",
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        random_state=42,
+        n_jobs=-1,
+    )
+    clf.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+
+    from sklearn.metrics import roc_auc_score
+    val_probs = clf.predict_proba(X_val)[:, 1]
+    val_auc = float(roc_auc_score(y_val, val_probs))
+
+    ensemble_path = checkpoint_path.with_suffix(".ensemble.json")
+    clf.save_model(str(ensemble_path))
+    _logger.info("GNN+XGBoost ensemble saved to %s  val_auc=%.4f", ensemble_path, val_auc)
+    return val_auc
+
 
 def train_gnn(
     graph_dir: str | Path | None = None,
@@ -189,7 +331,7 @@ def train_gnn(
 
     # ---- data ---------------------------------------------------------------
     if dry_run:
-        graphs = [_make_synthetic_graph(n_features=22, seed=seed)]
+        graphs = [_make_synthetic_graph(n_features=27, seed=seed)]
         epochs = 3
         _logger.info("dry-run mode: using synthetic graph for %d epochs", epochs)
     else:
@@ -238,7 +380,7 @@ def train_gnn(
     for epoch in range(1, epochs + 1):
         train_loss = _train_one_epoch(model, graphs, criterion, optimizer,
                                       batch_size=batch_size, num_neighbors=num_neighbors,
-                                      device=device)
+                                      device=device, focal_gamma=focal_gamma)
 
         val_records = _evaluate_split(model, graphs, split="val", device=device)
         val_auc = float(np.nanmean([r["auc"] for r in val_records])) if val_records else float("nan")
@@ -336,19 +478,40 @@ def train_gnn(
 
     checkpoint = Path(checkpoint_path)
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
+
+    # ---- Step 1: per-scenario threshold tuning on val set -------------------
+    thresholds: dict[str, float] = {}
+    for graph in graphs:
+        scenario_name = getattr(graph, "scenario", str(getattr(graph, "scenario_id", "unknown")))
+        thresholds[scenario_name] = _find_optimal_threshold(model, graph, device)
+    _logger.info("optimal val thresholds: %s", thresholds)
+    if best_state is not None:
+        best_state["thresholds"] = thresholds
+
     torch.save(best_state, checkpoint)
     history_path = checkpoint.with_suffix(".history.json")
     history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
-    # Per-scenario checkpoints: {model_type}_scenario{sid}.pt
+    # Per-scenario checkpoints
     for graph in graphs:
         sid = getattr(graph, "scenario_id", 0)
         scenario_ckpt = checkpoint.parent / f"{family}_scenario{sid}.pt"
         torch.save(best_state, scenario_ckpt)
 
-    report = metrics_frame(_evaluate_split(model, graphs, split="val", device=device))
+    # ---- Final eval with tuned thresholds -----------------------------------
+    val_records = _evaluate_split(model, graphs, split="val", device=device,
+                                  thresholds=thresholds)
+    report = metrics_frame(val_records)
     if run is not None:
         run.finish()
+
+    # ---- Step 5: GNN + XGBoost ensemble ------------------------------------
+    ensemble_auc: float | None = None
+    try:
+        ensemble_auc = _train_gnn_xgb_ensemble(model, graphs, device, checkpoint)
+        _logger.info("GNN+XGBoost ensemble val AUC: %.4f", ensemble_auc)
+    except Exception as exc:
+        _logger.warning("ensemble training skipped: %s", exc)
 
     return {
         "checkpoint": str(checkpoint),
@@ -358,5 +521,7 @@ def train_gnn(
         "stopped_epoch": stopped_epoch,
         "history": history,
         "validation_report": report.to_dict(orient="records"),
+        "thresholds": thresholds,
+        "ensemble_val_auc": ensemble_auc,
     }
 

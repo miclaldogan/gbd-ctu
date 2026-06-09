@@ -187,7 +187,7 @@ class TestConfusionMatrixPlot:
 # evaluate_all_scenarios
 # ---------------------------------------------------------------------------
 
-def _dummy_model(n_features: int = 22):
+def _dummy_model(n_features: int = 27):
     """Return an untrained GraphSAGE model for testing."""
     from gbd_ctu.models.gnn.graphsage import GraphSAGENodeClassifier
     return GraphSAGENodeClassifier(in_channels=n_features, hidden_channels=16,
