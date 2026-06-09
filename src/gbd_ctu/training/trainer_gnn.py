@@ -215,20 +215,14 @@ def _train_one_epoch_sampled(
     focal_gamma: float = 2.0,
     num_neighbors_per_layer: int = 15,
     batch_size: int = 2048,
-    hub_threshold: int = 100,
-    hub_max_degree: int = 20,
 ) -> float:
-    """Mini-batch training via per-graph NeighborLoader with hub-degree capping.
+    """Mini-batch training via per-graph NeighborLoader.
 
     Processes one graph at a time to avoid the C++ sampling-structure OOM
     that occurs when all 13 CTU-13 graphs are loaded simultaneously.
-    Hub nodes (degree > hub_threshold) have their outgoing edges subsampled
-    using inverse-degree weights so low-degree (botnet C&C) destinations are
-    preferentially sampled over high-degree gateways.
+    NeighborLoader already limits each node to num_neighbors_per_layer
+    neighbors per hop, so hub nodes (gateway, DNS) are naturally capped.
     """
-    from torch_geometric.utils import degree as pyg_degree
-    from copy import copy as shallow_copy
-
     model.train()
     running_loss = 0.0
     n_batches = 0
@@ -242,40 +236,11 @@ def _train_one_epoch_sampled(
         alpha = _scenario_focal_alpha(graph)
         per_graph_criterion = FocalLoss(gamma=focal_gamma, alpha=alpha)
 
-        # Cap hub-node edges with inverse-degree weighted subsampling.
-        # Only applied during training (not eval) to prevent hub aggregation
-        # from drowning out rare botnet peer signals.
-        ei = graph.edge_index
-        n  = int(graph.num_nodes)
-        deg = pyg_degree(ei[0], num_nodes=n, dtype=torch.long)
-        hub_nodes = (deg > hub_threshold).nonzero(as_tuple=True)[0]
-
-        if hub_nodes.numel() > 0:
-            keep = torch.ones(ei.size(1), dtype=torch.bool)
-            gen  = torch.Generator()
-            gen.manual_seed(42)
-            dst_deg = deg[ei[1]].float().clamp(min=1.0)
-
-            for hub in hub_nodes:
-                hub_mask = (ei[0] == hub)
-                hub_idx  = hub_mask.nonzero(as_tuple=True)[0]
-                if hub_idx.numel() <= hub_max_degree:
-                    continue
-                # Inverse destination-degree weights: prefer low-degree (botnet) targets
-                weights   = 1.0 / dst_deg[hub_idx]
-                kept_local = torch.multinomial(weights, hub_max_degree,
-                                               replacement=False, generator=gen)
-                drop_mask = torch.ones(hub_idx.numel(), dtype=torch.bool)
-                drop_mask[kept_local] = False
-                keep[hub_idx[drop_mask]] = False
-
-            train_graph = shallow_copy(graph)
-            train_graph.edge_index = ei[:, keep]
-        else:
-            train_graph = graph
-
+        # NeighborLoader naturally caps each node to num_neighbors_per_layer
+        # neighbors per hop — hub nodes (degree > 100) are already limited to
+        # at most that many neighbors during sampling without explicit pre-filtering.
         loader = NeighborLoader(
-            train_graph,
+            graph,
             num_neighbors=[num_neighbors_per_layer] * n_layers,
             input_nodes=train_idx,
             batch_size=batch_size,
@@ -496,8 +461,6 @@ def train_gnn(
                 focal_gamma=focal_gamma,
                 num_neighbors_per_layer=15,
                 batch_size=batch_size,
-                hub_threshold=100,
-                hub_max_degree=20,
             )
         else:
             train_loss = _train_one_epoch(model, graphs, criterion, optimizer,
