@@ -66,6 +66,9 @@ def main() -> int:
                         help="Use NeighborLoader mini-batch training (15 nbrs/layer).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Skip real data; run 3 epochs on a synthetic graph.")
+    parser.add_argument("--pretrained-gnn", default=None, metavar="PATH",
+                        help="Load pretrained GNN checkpoint and skip GNN training; "
+                             "only retrain the XGBoost ensemble.")
     args = parser.parse_args()
 
     # Build default checkpoint path
@@ -95,6 +98,7 @@ def main() -> int:
         use_neighbor_sampling=args.neighbor_sampling,
         dry_run=args.dry_run,
         scenario_ids=[args.scenario] if args.scenario is not None else None,
+        pretrained_gnn_path=args.pretrained_gnn,
     )
     print(json.dumps(result, indent=2))
     return 0

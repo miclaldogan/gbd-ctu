@@ -290,38 +290,88 @@ def _train_one_epoch_sampled(
 # ---------------------------------------------------------------------------
 
 def _train_gnn_xgb_ensemble(model, graphs, device, checkpoint_path: Path) -> float:
-    """Train an XGBoost classifier on [raw_features | GNN_embeddings].
+    """Train XGBoost on [raw | GNN_emb | Platt_prob | uncertainty | botnet_ratio | burst | sid].
 
-    Extracts the pre-classifier 3×embed-dim embedding from the hybrid GNN for
-    every node, concatenates it with the raw 30-dim node features, and trains
-    XGBoost on the combined representation.  Returns mean val AUC across
-    scenarios and saves the booster to <checkpoint>.ensemble.json.
+    Phase 2 improvements:
+    - Platt scaling: LogisticRegression(C=1) fitted on val GNN outputs calibrates raw probs
+    - GNN uncertainty: binary entropy of softmax (-p log2 p - (1-p) log2(1-p))
+    - Scenario botnet ratio: per-scenario train-split botnet rate as a node feature
+    - Flow burst indicator: fraction of incident edges that are temporal (type=1)
+    - XGBoost: 1500 trees, lr=0.01, depth=7, min_child_weight=5, subsample=0.8, col=0.7
     """
     try:
         import xgboost as xgb  # type: ignore
     except ImportError:
         raise ImportError("xgboost is required for the ensemble step")
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import roc_auc_score
 
     model.eval()
+
+    # --- Pass 1: collect val GNN probs to fit Platt calibrator ---
+    _val_gnn_probs, _val_labels = [], []
+    with torch.no_grad():
+        for graph in graphs:
+            g = graph.to(device)
+            probs = torch.softmax(model(g), dim=-1)[:, 1].cpu().numpy()
+            vm = g.val_mask.cpu().numpy().astype(bool)
+            if vm.any():
+                _val_gnn_probs.append(probs[vm])
+                _val_labels.append(g.y.cpu().numpy()[vm])
+
+    platt = LogisticRegression(C=1.0, max_iter=1000)
+    platt.fit(np.concatenate(_val_gnn_probs).reshape(-1, 1), np.concatenate(_val_labels))
+
+    # --- Pass 2: build full feature matrix ---
     X_train_parts, y_train_parts = [], []
     X_val_parts,   y_val_parts   = [], []
 
     with torch.no_grad():
         for graph in graphs:
             g = graph.to(device)
+            n = g.num_nodes
             raw = g.x.cpu().numpy()
+
             try:
                 emb = model.get_embeddings(g).cpu().numpy()
             except AttributeError:
-                emb = np.zeros((raw.shape[0], 1), dtype=np.float32)
-            # Include scenario_id as a feature so XGBoost can learn
-            # scenario-specific decision boundaries on the CTU-13 eval set.
-            sid = float(getattr(g, "scenario_id", 0))
-            sid_col = np.full((raw.shape[0], 1), sid, dtype=np.float32)
-            combined = np.concatenate([raw, emb, sid_col], axis=1)
-            labels = g.y.cpu().numpy()
+                emb = np.zeros((n, 1), dtype=np.float32)
+
+            probs = torch.softmax(model(g), dim=-1)[:, 1].cpu().numpy()
+
+            # Platt-calibrated probability
+            calib = platt.predict_proba(probs.reshape(-1, 1))[:, 1].reshape(-1, 1).astype(np.float32)
+
+            # Binary entropy uncertainty
+            p = np.clip(probs, 1e-7, 1 - 1e-7)
+            uncertainty = (-p * np.log2(p) - (1 - p) * np.log2(1 - p)).reshape(-1, 1).astype(np.float32)
+
+            # Scenario botnet ratio (train split)
             train_mask = g.train_mask.cpu().numpy().astype(bool)
-            val_mask   = g.val_mask.cpu().numpy().astype(bool)
+            br = float(g.y.cpu().numpy()[train_mask].mean()) if train_mask.any() else 0.0
+            botnet_ratio_col = np.full((n, 1), br, dtype=np.float32)
+
+            # Flow burst: fraction of incident edges that are temporal edges (type=1)
+            is_temporal = (g.edge_type == 1).float()
+            ones_e = torch.ones(g.edge_index.shape[1], device=device)
+            t_deg = torch.zeros(n, device=device)
+            t_deg.scatter_add_(0, g.edge_index[0], is_temporal)
+            t_deg.scatter_add_(0, g.edge_index[1], is_temporal)
+            tot_deg = torch.zeros(n, device=device)
+            tot_deg.scatter_add_(0, g.edge_index[0], ones_e)
+            tot_deg.scatter_add_(0, g.edge_index[1], ones_e)
+            burst = (t_deg / tot_deg.clamp(min=1.0)).cpu().numpy().reshape(-1, 1).astype(np.float32)
+
+            sid = float(getattr(g, "scenario_id", 0))
+            sid_col = np.full((n, 1), sid, dtype=np.float32)
+
+            combined = np.concatenate([
+                raw, emb, probs.reshape(-1, 1), calib, uncertainty,
+                botnet_ratio_col, burst, sid_col,
+            ], axis=1)
+
+            labels = g.y.cpu().numpy()
+            val_mask = g.val_mask.cpu().numpy().astype(bool)
             if train_mask.any():
                 X_train_parts.append(combined[train_mask])
                 y_train_parts.append(labels[train_mask])
@@ -336,13 +386,12 @@ def _train_gnn_xgb_ensemble(model, graphs, device, checkpoint_path: Path) -> flo
 
     scale_pos = float((y_train == 0).sum()) / max(float((y_train == 1).sum()), 1)
     clf = xgb.XGBClassifier(
-        n_estimators=1000,
-        max_depth=8,
-        learning_rate=0.02,
+        n_estimators=1500,
+        max_depth=7,
+        learning_rate=0.01,
         subsample=0.8,
-        colsample_bytree=0.8,
+        colsample_bytree=0.7,
         min_child_weight=5,
-        gamma=0.1,
         scale_pos_weight=scale_pos,
         eval_metric="auc",
         tree_method="hist",
@@ -353,9 +402,8 @@ def _train_gnn_xgb_ensemble(model, graphs, device, checkpoint_path: Path) -> flo
     )
     clf.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
 
-    from sklearn.metrics import roc_auc_score
-    val_probs = clf.predict_proba(X_val)[:, 1]
-    val_auc = float(roc_auc_score(y_val, val_probs))
+    val_probs_final = clf.predict_proba(X_val)[:, 1]
+    val_auc = float(roc_auc_score(y_val, val_probs_final))
 
     ensemble_path = checkpoint_path.with_suffix(".ensemble.json")
     clf.save_model(str(ensemble_path))
@@ -390,6 +438,7 @@ def train_gnn(
     num_neighbors: list[int] | None = None,
     dry_run: bool = False,
     scenario_ids: list[int] | None = None,
+    pretrained_gnn_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Train a GNN on serialized CTU-13 IP graphs with focal loss.
 
@@ -441,6 +490,14 @@ def train_gnn(
     in_channels = int(graphs[0].num_node_features)
     model = _build_model(family, in_channels, hidden_channels, out_channels,
                          heads, num_layers, dropout).to(device)
+
+    # Load pretrained weights if provided — skips GNN training entirely.
+    if pretrained_gnn_path is not None:
+        ckpt = torch.load(pretrained_gnn_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model_state"])
+        _logger.info("loaded pretrained GNN from %s — skipping training", pretrained_gnn_path)
+        epochs = 0
+
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     # Cosine annealing with warm restarts: escapes local minima that ReduceLROnPlateau
     # gets stuck in after the first step-down. cosine_T0=30, T_mult=2 gives restarts at
