@@ -155,7 +155,9 @@ def _evaluate_split(model, graphs, split: str, device: "torch.device | None" = N
     """
     model.eval()
     records: list[dict[str, Any]] = []
-    with torch.no_grad():
+    use_amp = device is not None and device.type == "cuda"
+    ctx = torch.amp.autocast(device_type="cuda") if use_amp else torch.amp.autocast(device_type="cpu", enabled=False)
+    with torch.no_grad(), ctx:
         for graph in graphs:
             if device is not None:
                 graph = graph.to(device)
@@ -177,16 +179,20 @@ def _evaluate_split(model, graphs, split: str, device: "torch.device | None" = N
 
 def _train_one_epoch(model, graphs, criterion, optimizer, batch_size: int,
                      num_neighbors: list[int], device: "torch.device | None" = None,
-                     focal_gamma: float = 2.0) -> float:
+                     focal_gamma: float = 2.0,
+                     scaler: "torch.amp.GradScaler | None" = None) -> float:
     """Run one training epoch with per-scenario adaptive focal alpha.
 
     Each graph gets a FocalLoss whose alpha = 1 - botnet_rate, so rare-botnet
     scenarios (0.1%) receive alpha~0.999 and balanced ones (50%) receive ~0.5.
     Graphs are moved to device one at a time to avoid GPU OOM.
+    AMP (autocast + GradScaler) halves activation memory, allowing 1.5M-edge
+    graphs to fit in 5.64 GB VRAM.
     """
     model.train()
     running_loss = 0.0
     n_batches = 0
+    use_amp = scaler is not None and device is not None and device.type == "cuda"
     for graph in graphs:
         if device is not None:
             graph = graph.to(device)
@@ -196,10 +202,18 @@ def _train_one_epoch(model, graphs, criterion, optimizer, batch_size: int,
         alpha = _scenario_focal_alpha(graph)
         per_graph_criterion = FocalLoss(gamma=focal_gamma, alpha=alpha)
         optimizer.zero_grad()
-        logits = model(graph)
-        loss = per_graph_criterion(logits[train_mask], graph.y[train_mask])
-        loss.backward()
-        optimizer.step()
+        if use_amp:
+            with torch.amp.autocast(device_type="cuda"):
+                logits = model(graph)
+                loss = per_graph_criterion(logits[train_mask], graph.y[train_mask])
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            logits = model(graph)
+            loss = per_graph_criterion(logits[train_mask], graph.y[train_mask])
+            loss.backward()
+            optimizer.step()
         running_loss += float(loss.item())
         n_batches += 1
         if torch.cuda.is_available():
@@ -421,6 +435,8 @@ def train_gnn(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     _logger.info("training device: %s", device)
     # Graphs stay on CPU; each is moved to device only during its forward pass.
+    # AMP GradScaler: halves activation memory so 1.5M-edge graphs fit in 5.64 GB VRAM.
+    amp_scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
     in_channels = int(graphs[0].num_node_features)
     model = _build_model(family, in_channels, hidden_channels, out_channels,
@@ -465,7 +481,8 @@ def train_gnn(
         else:
             train_loss = _train_one_epoch(model, graphs, criterion, optimizer,
                                           batch_size=batch_size, num_neighbors=num_neighbors,
-                                          device=device, focal_gamma=focal_gamma)
+                                          device=device, focal_gamma=focal_gamma,
+                                          scaler=amp_scaler)
 
         val_records = _evaluate_split(model, graphs, split="val", device=device)
         val_auc = float(np.nanmean([r["auc"] for r in val_records])) if val_records else float("nan")
@@ -474,7 +491,10 @@ def train_gnn(
         # val loss (full-graph cross-entropy for monitoring)
         val_loss_vals: list[float] = []
         model.eval()
-        with torch.no_grad():
+        _val_ctx = (torch.amp.autocast(device_type="cuda")
+                    if device.type == "cuda"
+                    else torch.amp.autocast(device_type="cpu", enabled=False))
+        with torch.no_grad(), _val_ctx:
             for graph in graphs:
                 g = graph.to(device)
                 if not g.val_mask.any():

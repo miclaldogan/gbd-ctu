@@ -565,7 +565,7 @@ class FlowGraphBuilder:
 
         # Shared-IP edges (edge_type=0) and temporal-proximity edges (edge_type=1)
         ip_src, ip_dst   = _build_flow_edges(feature_frame, max_degree=self.max_degree)
-        tp_src, tp_dst   = _build_temporal_edges(feature_frame, window_seconds=30.0, max_neighbors=5)
+        tp_src, tp_dst   = _build_temporal_edges(feature_frame, window_seconds=30.0, max_neighbors=2)
 
         parts_src  = [p for p in (ip_src, tp_src)  if p.size > 0]
         parts_dst  = [p for p in (ip_dst, tp_dst)  if p.size > 0]
